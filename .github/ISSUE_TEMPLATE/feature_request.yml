@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest something Torpor should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve
+      description: The situation you are in, not the feature you have in mind.
+    validations: { required: true }
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you had in mind
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you file
+      options:
+        - label: This does not need a token or a server — see the hard rule in CONTRIBUTING.md

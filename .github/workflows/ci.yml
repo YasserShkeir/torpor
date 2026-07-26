@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Cache build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: ${{ runner.os }}-spm-
+
+      - name: Build (debug)
+        run: swift build 2>&1 | tee build.log
+
+      - name: Fail on warnings
+        run: |
+          if grep -q "warning:" build.log; then
+            echo "::error::Build produced warnings"
+            grep "warning:" build.log
+            exit 1
+          fi
+
+      - name: Build the app bundle
+        run: ./scripts/build-app.sh
+
+      - name: Smoke-test the CLI
+        run: |
+          BIN="dist/Torpor.app/Contents/MacOS/Torpor"
+          "$BIN" --version
+          "$BIN" --help > /dev/null
+          # No Claude Code on the runner, so this must exit cleanly saying so.
+          "$BIN" --list
+          # An unknown flag must be rejected, not silently launch the GUI.
+          if "$BIN" --definitely-not-a-flag 2>/dev/null; then
+            echo "::error::Unknown flag did not exit non-zero"
+            exit 1
+          fi

@@ -17,9 +17,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/YasserShkeir/torpor/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/YasserShkeir/torpor/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/YasserShkeir/torpor/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/YasserShkeir/torpor?sort=semver"></a>
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-black">
-  <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-orange">
-  <img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
 Built for the case where you've got a dozen terminal tabs open, six of them
@@ -71,27 +71,138 @@ countdown (time remaining, clock time, or both).
 
 ## Install
 
+### Homebrew
+
 ```sh
-git clone <this repo> && cd torpor
+brew install --cask yassershkeir/torpor/torpor
+```
+
+Then, **before you open it for the first time**, run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Torpor.app
+```
+
+That command is explained under [Why macOS blocks Torpor](#why-macos-blocks-torpor).
+If you have already tried to open Torpor, it will fail — use the *Open Anyway*
+steps in that section instead.
+
+Use the full `yassershkeir/torpor/torpor` name. Since Homebrew 6.0, third-party
+taps need explicit trust, and installing by fully-qualified name grants it to
+this one cask and nothing else.
+
+### Download
+
+1. Grab `Torpor-<version>.zip` from [the latest release](https://github.com/YasserShkeir/torpor/releases/latest).
+2. Unzip it and drag **Torpor.app** into **Applications** — do this *before*
+   opening it, or you end up with a stale copy in Downloads and a confusing
+   next step.
+3. **Before opening it**, run:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Torpor.app
+   ```
+
+4. Open Torpor from Applications.
+
+Optionally, verify the download came from this repo's public build workflow
+before you run it:
+
+```sh
+gh attestation verify Torpor-<version>.zip --repo YasserShkeir/torpor
+shasum -a 256 -c Torpor-<version>.zip.sha256
+```
+
+### Build from source
+
+The reassuring option, and the only one with no Gatekeeper step — software you
+compile yourself is never quarantined.
+
+```sh
+git clone https://github.com/YasserShkeir/torpor.git
+cd torpor
 ./scripts/build-app.sh
 open dist/Torpor.app
 ```
 
-Requires macOS 14+ and a Swift 6 toolchain (Xcode 16+).
+Requires macOS 14+ and Swift 6.2 (Xcode 26 or newer).
 
-The binary doubles as a CLI:
+---
 
+## Why macOS blocks Torpor
+
+Torpor is **ad-hoc signed, not notarised**. Notarisation needs an Apple
+Developer Program membership at $99/year, which this project does not have yet.
+macOS marks everything downloaded from the internet as quarantined and refuses
+to open quarantined software Apple has not checked. Nothing is wrong with the
+download — macOS simply cannot tell who built it.
+
+**If you have not opened it yet**, remove the marker:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Torpor.app
 ```
-Torpor --list                   List running sessions with memory
-Torpor --groups                 List sessions grouped by project folder
-Torpor --preview <pid>          Dry run: what hibernate captures, what revive runs
-Torpor --hibernate <pid>        Capture argv, terminate, free its memory
-Torpor --revive <session-id>    Reopen it in a terminal, flags replayed
-Torpor --freeze <pid>           SIGSTOP a session and its MCP subtree
-Torpor --thaw <pid>             SIGCONT it again
-Torpor --status                 Show quota and statusline state
-Torpor --render <dir>           Render the UI to PNG (development)
+
+That deletes the downloaded-from-the-internet flag on that one app. It is also,
+honestly, a command you should be sceptical of when a stranger hands it to you
+— which is why "Build from source" is directly above.
+
+**If you already double-clicked it and got a warning**, that command now fails
+with `Operation not permitted`: macOS locks the marker once it has blocked a
+launch. Use this instead:
+
+1. **System Settings → Privacy & Security**
+2. Scroll to **Security**. There is a line mentioning Torpor.
+3. Click **Open Anyway**, enter your password, confirm.
+
+Do it soon after the block — the entry does not stay forever. If it is not
+listed, delete the app, re-download, and use `xattr` *before* opening.
+
+### First run
+
+Torpor asks for permission to control Terminal or iTerm the first time you
+revive a session — that is how it reopens the session in the tab it was already
+in. Because Torpor is ad-hoc signed, macOS treats each new build as a different
+app, so **it asks again after every update**. A Developer ID certificate is the
+only fix, and the main reason this project will eventually buy one.
+
+---
+
+## Updating
+
+Torpor updates itself. It checks once a day, tells you when a new version
+exists, and installs it once you approve — there is a **Check for Updates…**
+button in Settings → About.
+
+Updates are verified with an EdDSA signature over the archive, checked against a
+public key baked into the app. macOS cannot vouch for Torpor, so Torpor vouches
+for its own updates.
+
+Homebrew installs update themselves too; `brew upgrade --cask torpor` also works
+and does not fight the in-app updater.
+
+---
+
+## Uninstalling
+
+```sh
+# First — this restores whatever statusline you had before Torpor.
+# Nothing else can do it once the app is gone.
+/Applications/Torpor.app/Contents/MacOS/Torpor --uninstall-statusline
+
+brew uninstall --zap --cask torpor      # if installed via Homebrew
 ```
+
+Manual removal:
+
+```sh
+/Applications/Torpor.app/Contents/MacOS/Torpor --uninstall-statusline
+rm -rf /Applications/Torpor.app
+rm -rf ~/Library/Application\ Support/Torpor ~/.torpor
+security delete-generic-password -s dev.torpor.Torpor 2>/dev/null
+```
+
+---
 
 ## Where usage data comes from
 

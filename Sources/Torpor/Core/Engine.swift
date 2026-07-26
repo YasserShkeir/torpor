@@ -60,6 +60,9 @@ final class Engine: ObservableObject {
     /// call every few minutes, so Refresh was otherwise a silent no-op for
     /// anywhere from five minutes to an hour, with nothing on screen changing.
     @Published private(set) var nextFetchAllowed: Date = .distantPast
+    /// Sparkle owns the update UI end to end, so the engine only needs to hold
+    /// the controller and expose it to the About tab.
+    let updater = Updater()
     private var saveTask: Task<Void, Never>?
 
     @Published var preferences = Preferences() {
@@ -121,6 +124,7 @@ final class Engine: ObservableObject {
     private let scanner = TranscriptScanner()
     private let notifier = Notifier()
     private let api = UsageAPI()
+
     private var timer: Timer?
     private var isFetching = false
 
@@ -585,6 +589,11 @@ final class Engine: ObservableObject {
     func disarmConfirmations() {
         confirmationGeneration &+= 1
     }
+
+    // MARK: - Updates
+
+    var installKind: Updater.InstallKind { Updater.installKind }
+    var currentVersionString: String { Updater.currentVersion }
 
     func forceRefreshAccount() {
         // The consent flag gated only the poll loop, so withdrawing consent

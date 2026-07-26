@@ -1,0 +1,39 @@
+name: Bug report
+description: Something is broken, wrong, or stopped working after a Claude Code update
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Torpor reads undocumented Claude Code internals. If it broke right after
+        an update, that is expected and worth reporting — thank you.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations: { required: true }
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Output of `Torpor --list`, `Torpor --status` and `Torpor --version`. Redact anything you would rather not share.
+      render: shell
+    validations: { required: true }
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code version
+      description: Output of `claude --version`
+    validations: { required: true }
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+    validations: { required: true }
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install Torpor?
+      options: [Homebrew, Downloaded the release, Built from source]
+    validations: { required: true }

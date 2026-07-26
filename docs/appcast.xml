@@ -1,0 +1,10 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Torpor</title>
+    <link>https://yassershkeir.github.io/torpor/appcast.xml</link>
+    <description>Updates for Torpor, a macOS menu bar session manager for Claude Code.</description>
+    <language>en</language>
+    <!-- Releases are inserted here by .github/workflows/release.yml, newest first. -->
+  </channel>
+</rss>

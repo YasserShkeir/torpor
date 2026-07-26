@@ -1,0 +1,16 @@
+changelog:
+  exclude:
+    labels: [skip-changelog, duplicate, invalid]
+  categories:
+    - title: Breaking changes
+      labels: [breaking]
+    - title: Broken by a Claude Code update, now fixed
+      labels: [upstream-breakage]
+    - title: Features
+      labels: [enhancement]
+    - title: Fixes
+      labels: [bug]
+    - title: Privacy and credentials
+      labels: [privacy, security]
+    - title: Other changes
+      labels: ["*"]

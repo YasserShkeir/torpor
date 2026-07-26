@@ -6,3 +6,6 @@ dist/
 # Local audit report. Contains real project names, session titles and paths
 # from the machine it was produced on — kept out of the repo deliberately.
 AUDIT.md
+
+# Launch copy for LinkedIn/Reddit/X. Drafts, not shipped artefacts.
+launch/

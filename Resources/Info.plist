@@ -2,34 +2,37 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>Torpor</string>
-    <key>CFBundleDisplayName</key>
-    <string>Torpor</string>
-    <key>CFBundleIdentifier</key>
-    <string>dev.torpor.Torpor</string>
-    <key>CFBundleExecutable</key>
-    <string>Torpor</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-
-    <!-- Menu bar accessory: no dock icon, no main window. -->
-    <key>LSUIElement</key>
-    <true/>
-
-    <!-- Reviving a session opens a new terminal window and types the resume
-         command into it, which requires Automation permission. macOS shows this
-         string in the consent prompt. -->
-    <key>NSAppleEventsUsageDescription</key>
-    <string>Torpor opens a new terminal window to bring a hibernated Claude Code session back, so you never have to retype the resume command.</string>
-
-    <key>NSHumanReadableCopyright</key>
-    <string>MIT licensed.</string>
+	<key>CFBundleDisplayName</key>
+	<string>Torpor</string>
+	<key>CFBundleExecutable</key>
+	<string>Torpor</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.torpor.Torpor</string>
+	<key>CFBundleName</key>
+	<string>Torpor</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Torpor opens a new terminal window to bring a hibernated Claude Code session back, so you never have to retype the resume command.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT licensed.</string>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://yassershkeir.github.io/torpor/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>rl7C+SRN0q8hbVynz1BoyznJzveSBHYgyf3LMQB2xyE=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

@@ -15,7 +15,7 @@ struct SettingsView: View {
                     .tabItem { Label("Sessions", systemImage: "square.stack.3d.up") }
                 NotificationsTab(engine: engine)
                     .tabItem { Label("Notifications", systemImage: "bell") }
-                AboutTab()
+                AboutTab(engine: engine)
                     .tabItem { Label("About", systemImage: "info.circle") }
             }
 
@@ -761,6 +761,8 @@ struct NotificationsTab: View {
 // MARK: - About
 
 struct AboutTab: View {
+    @ObservedObject var engine: Engine
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -770,7 +772,7 @@ struct AboutTab: View {
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Torpor").font(.title2).bold()
-                        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
+                        Text("Version \(engine.currentVersionString)")
                             .font(.caption).foregroundStyle(.secondary)
                         Text("Session manager for Claude Code").font(.caption).foregroundStyle(.secondary)
                     }
@@ -783,6 +785,30 @@ struct AboutTab: View {
                     Bullet("Torpor counts the memory a session actually costs your Mac, including pages macOS has compressed to save space. Activity Monitor's default column leaves those out, which can make an idle session look more than ten times smaller than it is — and that hidden memory is exactly what hibernating gives back.")
                     Bullet("Freeze pauses a session's processes so they use no CPU — useful for a runaway session, but it barely dents memory, because macOS has usually already compressed most of an idle session. Hibernate ends the session and gives back all of its memory.")
                     Bullet("Usage percentages come from Claude Code's own statusline. If you have chosen another source, Torpor shows whichever reading is more recent.")
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Updates").font(.headline)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("You're on \(engine.currentVersionString).").font(.caption)
+                            if let last = engine.updater.lastCheckDescription {
+                                Text(last).font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button("Check for Updates…") { engine.updater.checkForUpdates() }
+                            .controlSize(.small)
+                            .disabled(!engine.updater.canCheck)
+                    }
+                    Text(engine.installKind.note)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Torpor checks once a day and asks before installing anything. Updates are verified against a signing key built into this app — macOS can't vouch for Torpor, so Torpor vouches for its own updates. Because it isn't notarised, macOS treats each update as a new app and will ask again for Terminal and Keychain permission.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Divider()

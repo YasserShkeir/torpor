@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from the tag
+        id: v
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          V="${TAG#v}"
+          PLIST=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+          # The tag and Info.plist must agree, or Sparkle offers an update that
+          # reports the old version once installed and offers itself forever.
+          if [ "$V" != "$PLIST" ]; then
+            echo "::error::tag $TAG says $V but Info.plist says $PLIST"
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: ./scripts/build-app.sh
+
+      - name: Package
+        id: pkg
+        run: |
+          set -euo pipefail
+          V="${{ steps.v.outputs.version }}"
+          # ditto, never `zip -r`: zip dereferences the symlinks inside
+          # Sparkle.framework and produces a bundle whose signature can never
+          # verify — indistinguishable from a Gatekeeper problem, and unfixable
+          # by the user.
+          ditto -c -k --sequesterRsrc --keepParent dist/Torpor.app "dist/Torpor-$V.zip"
+          ( cd dist && shasum -a 256 "Torpor-$V.zip" > "Torpor-$V.zip.sha256" )
+          echo "zip=dist/Torpor-$V.zip" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(cut -d' ' -f1 < "dist/Torpor-$V.zip.sha256")" >> "$GITHUB_OUTPUT"
+
+      # Not notarisation and not a Gatekeeper substitute, but real supply-chain
+      # evidence: anyone can verify this exact file came out of this workflow.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.pkg.outputs.zip }}
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            "dist/Torpor-$V.zip" "dist/Torpor-$V.zip.sha256" \
+            --title "Torpor $V" --generate-notes --latest
+
+      - name: Sign the archive and publish the appcast
+        env:
+          SPARKLE_ED_KEY: ${{ secrets.SPARKLE_ED_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$SPARKLE_ED_KEY"
+          SIGN=$(find .build -name sign_update -type f | head -1)
+          # --ed-key-file - reads from stdin, so the key never lands in argv
+          # or on disk.
+          SIG=$(printf '%s' "$SPARKLE_ED_KEY" | "$SIGN" "dist/Torpor-$V.zip" --ed-key-file -)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/Torpor-$V.zip"
+
+          # This job is checked out at a tag; the appcast has to land on the
+          # branch GitHub Pages serves.
+          git clone --depth 1 --branch main \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main-checkout
+          ./scripts/appcast-insert.py "$V" "$TAG" "$URL" "$SIG" main-checkout/docs/appcast.xml
+          cd main-checkout
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "appcast: $V"
+          git push
+
+      # Last, so nobody can tap a cask whose download 404s.
+      - name: Bump the Homebrew cask
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          V: ${{ steps.v.outputs.version }}
+          SHA: ${{ steps.pkg.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then echo "TAP_TOKEN not set — skipping"; exit 0; fi
+          git clone --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/YasserShkeir/homebrew-torpor.git" tap
+          cd tap
+          /usr/bin/sed -i '' -E "s|^  version \"[^\"]*\"|  version \"${V}\"|" Casks/torpor.rb
+          /usr/bin/sed -i '' -E "s|^  sha256 \"[^\"]*\"|  sha256 \"${SHA}\"|"  Casks/torpor.rb
+          if git diff --quiet; then echo "::error::cask unchanged — sed matched nothing"; exit 1; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "torpor ${V}"
+          git push
