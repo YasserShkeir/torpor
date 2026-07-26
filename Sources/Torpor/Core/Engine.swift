@@ -101,8 +101,13 @@ final class Engine: ObservableObject {
     /// threshold — the number that actually answers "what would I get back?".
     var reclaimableFootprint: UInt64 {
         let cutoff = max(0, preferences.notifyIdleMinutes) * 60
+        // Must match what the Reclaim button will actually hibernate. Filtering
+        // on idle *time* alone advertised sessions the action then skipped: one
+        // long-idle session whose status is `busy` or absent produced a header
+        // reading "Reclaim 3.1 GB", a confirm reading "Hibernate 0", and
+        // nothing freed.
         return sessions
-            .filter { ($0.idleFor ?? 0) >= cutoff }
+            .filter { $0.declaredStatus == "idle" && ($0.idleFor ?? 0) >= cutoff }
             .reduce(0) { $0 + $1.totalFootprint }
     }
 
@@ -251,6 +256,13 @@ final class Engine: ObservableObject {
         }
         statuslineState = StatuslineInstaller.currentState()
         accountStatus.claudeCodeCredentialsAvailable = CredentialStore.claudeCodeCredentialsPresent()
+        // Reconcile with launchd rather than trusting our own stored flag: the
+        // user can revoke a login item in System Settings, and the toggle would
+        // otherwise keep claiming it is on.
+        if LoginItem.isAvailable {
+            let actual = LoginItem.isEnabled
+            if actual != preferences.launchAtLogin { preferences.launchAtLogin = actual }
+        }
         refreshAccountStatus()
 
         if preferences.liveFetchPermitted { Task { await fetchLive() } }
@@ -447,7 +459,10 @@ final class Engine: ObservableObject {
         do {
             switch preferences.authMode {
             case .cliCredentials, .pastedToken:
-                guard let token = CredentialStore.subscriptionToken() else { return }
+                // Belt and braces: no network call on this path without consent,
+                // whichever caller got us here.
+                guard preferences.acknowledgedTokenRisk,
+                      let token = CredentialStore.subscriptionToken() else { return }
                 let (snapshot, balance) = try await api.fetchSubscription(
                     token: token, clientVersion: clientVersion)
                 quota = snapshot
@@ -485,6 +500,13 @@ final class Engine: ObservableObject {
     }
 
     func forceRefreshAccount() {
+        // The consent flag gated only the poll loop, so withdrawing consent
+        // left this button still sending a bearer token to the endpoint the
+        // app itself warns can get an account banned.
+        guard preferences.liveFetchPermitted else {
+            lastError = "Accept the account-risk notice before Torpor will contact Anthropic."
+            return
+        }
         Task { await fetchLive() }
     }
 
@@ -515,6 +537,10 @@ final class Engine: ObservableObject {
     /// Clear only the subscription token. Split from the Console key because a
     /// single shared `disconnect()` meant rotating an API key also destroyed
     /// the user's subscription credential.
+    /// Whether a subscription token is on disk, regardless of consent state —
+    /// so the delete button can be shown even after consent is withdrawn.
+    var hasStoredSubscriptionToken: Bool { CredentialStore.subscriptionToken() != nil }
+
     func clearSubscriptionCredential() {
         CredentialStore.clearSubscriptionToken()
         if preferences.authMode == .cliCredentials || preferences.authMode == .pastedToken {
@@ -688,6 +714,7 @@ final class Engine: ObservableObject {
 
             do {
                 let record = try SessionControl.hibernate(session: session, store: store)
+                guard preferences.notificationsEnabled else { continue }
                 notifier.post(
                     key: "auto-\(record.sessionId)",
                     title: "Hibernated \(record.name)",

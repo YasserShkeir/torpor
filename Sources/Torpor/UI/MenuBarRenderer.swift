@@ -46,11 +46,14 @@ enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .fiveHour: return "Session (5-hour)"
-        case .sevenDay: return "Week (all models)"
-        case .highest:  return "Whichever is highest"
-        case .model:    return "A specific model"
-        case .memory:   return "Session memory"
+        // "Session" elsewhere in Torpor means a Claude Code process. Using it
+        // here for a rate-limit window put two unrelated meanings in one
+        // five-item picker.
+        case .fiveHour: return "5-hour limit"
+        case .sevenDay: return "Weekly limit (all models)"
+        case .highest:  return "Whichever limit is highest"
+        case .model:    return "One model's weekly limit"
+        case .memory:   return "Memory used by Claude Code"
         }
     }
 
@@ -68,7 +71,7 @@ enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
         case .model:
             return "Share of this model's own weekly limit used so far."
         case .memory:
-            return "Memory held by all Claude Code sessions, as a share of your Mac's total RAM. Memory has no reset window, so this gauge has no time marker."
+            return "Memory held by all Claude Code sessions, as a share of your Mac's total RAM. Memory never resets, so there is no countdown — but on the Progress bar style the lower bar keeps running, showing how far through your quota window you are."
         }
     }
 

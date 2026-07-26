@@ -74,7 +74,7 @@ struct PopoverView: View {
 
             if engine.reclaimableFootprint > 0 {
                 if confirmingReclaimAll {
-                    Button("End \(reclaimableSessions.count)") {
+                    Button("Hibernate \(reclaimableSessions.count)") {
                         confirmingReclaimAll = false
                         engine.hibernateIdleSessions()
                     }
@@ -130,7 +130,7 @@ struct PopoverView: View {
 
             if let quota = engine.quota {
                 if let five = quota.fiveHour {
-                    GaugeRow(label: "Session", window: five, windowLength: 5 * 3600)
+                    GaugeRow(label: "5-hour", window: five, windowLength: 5 * 3600)
                 }
                 if let week = quota.sevenDay {
                     GaugeRow(label: "Week", window: week, windowLength: 7 * 86_400)
@@ -467,7 +467,7 @@ struct ProjectGroupView: View {
                 // unknown, because those cannot be judged safe.
                 if group.allIdle {
                     if confirming {
-                        Button("Sleep \(group.sessions.count)") {
+                        Button("Hibernate \(group.sessions.count)") {
                             confirming = false
                             engine.hibernateGroup(group)
                         }
@@ -674,7 +674,7 @@ struct SessionRow: View {
                 // route to the same signal is guarded the same way.
                 if session.declaredStatus == "idle" {
                     if confirmingHibernate {
-                        Button("End it") {
+                        Button("Hibernate") {
                             confirmingHibernate = false
                             engine.hibernate(session)
                         }

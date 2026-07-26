@@ -136,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         // NSPopover keeps its content view controller alive for the app's
         // lifetime, so SwiftUI @State survives closing. Without this, an armed
-        // "Sleep 4" confirmation is still armed hours later — one stray click
+        // "Hibernate 4" confirmation is still armed hours later — one stray click
         // from ending four sessions, on a row that may have re-sorted under the
         // cursor in the meantime.
         engine.disarmConfirmations()

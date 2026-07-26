@@ -5,17 +5,38 @@ struct SettingsView: View {
     @ObservedObject var engine: Engine
 
     var body: some View {
-        TabView {
-            AccountTab(engine: engine)
-                .tabItem { Label("Account", systemImage: "person.badge.key") }
-            AppearanceTab(engine: engine)
-                .tabItem { Label("Appearance", systemImage: "paintbrush") }
-            SessionsTab(engine: engine)
-                .tabItem { Label("Sessions", systemImage: "square.stack.3d.up") }
-            NotificationsTab(engine: engine)
-                .tabItem { Label("Notifications", systemImage: "bell") }
-            AboutTab()
-                .tabItem { Label("About", systemImage: "info.circle") }
+        VStack(spacing: 0) {
+            TabView {
+                AccountTab(engine: engine)
+                    .tabItem { Label("Account", systemImage: "person.badge.key") }
+                AppearanceTab(engine: engine)
+                    .tabItem { Label("Appearance", systemImage: "paintbrush") }
+                SessionsTab(engine: engine)
+                    .tabItem { Label("Sessions", systemImage: "square.stack.3d.up") }
+                NotificationsTab(engine: engine)
+                    .tabItem { Label("Notifications", systemImage: "bell") }
+                AboutTab()
+                    .tabItem { Label("About", systemImage: "info.circle") }
+            }
+
+            // Every failing action in this window — Install, Repair, Remove,
+            // Connect, Save token, Save key, launch-at-login — routed its error
+            // into `lastError`, which only the popover rendered. And opening
+            // Settings closes the popover, so those messages were unreachable
+            // by construction.
+            if let error = engine.lastError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.bottom, 10)
+            } else if let notice = engine.lastNotice {
+                Label(notice, systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.bottom, 10)
+            }
         }
         .frame(width: 620, height: 520)
     }
@@ -68,6 +89,10 @@ struct AccountTab: View {
             Spacer()
             if mode != .statusline {
                 Button("Refresh") { engine.forceRefreshAccount() }
+                    .disabled(!engine.preferences.liveFetchPermitted)
+                    .help(engine.preferences.liveFetchPermitted
+                          ? "Ask Anthropic for current usage. Rate limited to once every few minutes."
+                          : "Accept the account-risk notice first.")
             }
         }
         .padding(12)
@@ -149,7 +174,7 @@ struct AccountTab: View {
                         Spacer()
                     }
                 }
-                Text("A backup of settings.json is written to Application Support before any change.")
+                Text("settings.json is copied to Application Support, timestamped, before Torpor changes it — on install and on remove alike.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
@@ -201,7 +226,13 @@ struct AccountTab: View {
                         }
                     }
 
-                    Button("Disconnect and clear the subscription token", role: .destructive) {
+                }
+
+                // Deliberately outside the consent block. It used to live
+                // inside it, so unticking the risk box hid the only way to
+                // delete the token it had just stopped consenting to.
+                if engine.hasStoredSubscriptionToken {
+                    Button("Disconnect and delete the stored token", role: .destructive) {
                         engine.clearSubscriptionCredential()
                     }
                     .controlSize(.small)
@@ -211,7 +242,7 @@ struct AccountTab: View {
         case .consoleAPIKey:
             VStack(alignment: .leading, spacing: 10) {
                 Text("Console API key").font(.headline)
-                Text("Shows Anthropic Console spend: month-to-date cost, a daily chart and a per-model breakdown. This is the path Anthropic documents for third-party tools.")
+                Text("Adds Anthropic Console spend: month-to-date cost, a daily chart and a per-model breakdown. This is the path Anthropic documents for third-party tools. It does not change the usage gauges — Console billing and your subscription limits are separate ledgers.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -349,7 +380,7 @@ struct AppearanceTab: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Usage rows in the panel").font(.headline)
                     if engine.availableUsageRows.isEmpty {
-                        Text("The session and weekly windows always show. Model-specific rows — Fable, Sonnet, Opus — appear here once Anthropic reports a separate limit for them on your plan.")
+                        Text("The 5-hour and weekly windows always show. Model-specific rows — currently Sonnet and Opus — appear here once Anthropic reports a separate limit for them on your plan.")
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
@@ -416,7 +447,9 @@ struct AppearanceTab: View {
                     Text("Live preview").font(.caption).foregroundStyle(.secondary)
                     MenuBarPreview(engine: engine)
                     if engine.preferences.menuBarStyle == .bar {
-                        Text("Two bars: usage on top, elapsed time underneath. If the top bar is shorter than the bottom one you are inside the pace your window can carry; if it is longer you are burning faster than the clock.")
+                        Text(engine.preferences.menuBarMetric.hasResetWindow
+                             ? "Two bars: usage on top, elapsed time underneath. If the top bar is shorter than the bottom one you are inside the pace your window can carry; if it is longer you are burning faster than the clock."
+                             : "Two bars: memory as a share of RAM on top, and underneath, how far through your quota window you are. They measure different things, so comparing their lengths tells you nothing.")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -554,7 +587,19 @@ struct SessionsTab: View {
                         Text("iTerm").tag("iTerm")
                     }
                     .pickerStyle(.segmented)
-                    Text("Reviving opens a new window and runs the resume command. macOS will ask for Automation permission the first time.")
+                    Text("Torpor first tries to reopen a session in the exact Terminal or iTerm tab it was ended in — that tab is usually still open at a prompt, so your window layout survives, and this setting is not used. It applies only when that tab can't be reached: it was closed, the app isn't running, or the session ran somewhere Torpor can't script, such as VS Code's built-in terminal. macOS asks for Automation permission the first time.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Idle threshold").font(.headline)
+                    LabeledStepper(title: "Treat a session as idle after",
+                                   value: $engine.preferences.notifyIdleMinutes,
+                                   step: 15, range: 5...480, unit: "min")
+                    Text("Used by idle notifications and by the Reclaim button in the menu bar panel — that button hibernates every session Claude Code reports as idle for longer than this. Auto-hibernate below has its own, separate threshold.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -562,8 +607,16 @@ struct SessionsTab: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Auto-hibernate idle sessions", isOn: $engine.preferences.autoHibernateEnabled)
+                    Toggle("Auto-hibernate idle sessions — ends them without asking", isOn: $engine.preferences.autoHibernateEnabled)
                         .font(.callout)
+                    // Outside the `if` on purpose: this used to appear only
+                    // after enabling, so at the moment of the decision the
+                    // label was the only text on screen and it said nothing
+                    // about ending processes.
+                    Label("Hibernating ends the session's processes to reclaim their memory. Torpor does not ask first, and posts a notification when it does. The conversation is saved and reopens in one click. Sessions that are working, frozen, or whose status Torpor cannot read — including VS Code-hosted ones — are never touched.",
+                          systemImage: "shield.lefthalf.filled")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     if engine.preferences.autoHibernateEnabled {
                         LabeledStepper(title: "Idle longer than",
                                        value: $engine.preferences.autoHibernateIdleMinutes,
@@ -571,10 +624,6 @@ struct SessionsTab: View {
                         LabeledStepper(title: "Holding at least",
                                        value: $engine.preferences.autoHibernateFootprintMB,
                                        step: 50, range: 100...4000, unit: "MB")
-                        Label("Only sessions the registry explicitly reports as idle are eligible. Sessions with unknown status — including VS Code-hosted ones — are never touched automatically.",
-                              systemImage: "shield.lefthalf.filled")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -597,12 +646,12 @@ struct NotificationsTab: View {
                 Group {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Idle sessions").font(.headline)
-                        LabeledStepper(title: "Notify when idle past",
-                                       value: $engine.preferences.notifyIdleMinutes,
-                                       step: 15, range: 5...480, unit: "min")
-                        LabeledStepper(title: "…and holding at least",
+                        LabeledStepper(title: "Notify when an idle session holds at least",
                                        value: $engine.preferences.notifyIdleFootprintMB,
                                        step: 50, range: 50...4000, unit: "MB")
+                        Text("How long counts as idle is set on the Sessions tab, because the same threshold drives the Reclaim button.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Divider()

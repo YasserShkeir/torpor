@@ -42,7 +42,7 @@ enum StatuslineInstaller {
             case let .settingsUnparseable(path, underlying):
                 return "\(path) is not valid JSON (\(underlying)). Torpor will not overwrite it — fix or move the file, then try again."
             case let .backupFailed(path, underlying):
-                return "Could not back up \(path) (\(underlying)). No changes were made."
+                return "Could not back up \(path) (\(underlying)). settings.json was not modified."
             }
         }
     }
@@ -100,6 +100,24 @@ enum StatuslineInstaller {
         return .foreign(command: command)
     }
 
+    /// Copy settings.json aside before it is touched.
+    ///
+    /// Called before the *first* mutation on every path, not just before the
+    /// final write — an earlier version backed up after the shim had already
+    /// been rewritten and the legacy shim deleted, so "no changes were made"
+    /// was untrue by the time it could be printed.
+    private static func backupSettings() throws {
+        guard FileManager.default.fileExists(atPath: settingsURL.path) else { return }
+        let stamp = ISO8601DateFormatter.filenameSafe.string(from: Date())
+        let backup = Paths.support.appendingPathComponent("settings.\(stamp).json.backup")
+        do {
+            try FileManager.default.copyItem(at: settingsURL, to: backup)
+        } catch {
+            throw InstallError.backupFailed(path: settingsURL.path,
+                                            underlying: error.localizedDescription)
+        }
+    }
+
     /// Write the shim and point `settings.json` at it, preserving any existing
     /// statusline by chaining to it.
     static func install() throws {
@@ -122,6 +140,9 @@ enum StatuslineInstaller {
             break
         }
 
+        // Before the first mutation of anything.
+        try backupSettings()
+
         try writeShim(chaining: chained)
 
         // Only now is it safe to drop the old copy.
@@ -139,20 +160,6 @@ enum StatuslineInstaller {
         let out = try JSONSerialization.data(withJSONObject: root,
                                              options: [.prettyPrinted, .sortedKeys])
 
-        // Back up before touching a file the user owns. A failed backup aborts
-        // the install rather than proceeding unprotected, and backups are
-        // timestamped so a second install cannot eat the original.
-        if existing != nil {
-            let stamp = ISO8601DateFormatter.filenameSafe.string(from: Date())
-            let backup = Paths.support.appendingPathComponent("settings.\(stamp).json.backup")
-            do {
-                try FileManager.default.copyItem(at: settingsURL, to: backup)
-            } catch {
-                throw InstallError.backupFailed(path: settingsURL.path,
-                                                underlying: error.localizedDescription)
-            }
-        }
-
         try out.write(to: settingsURL, options: .atomic)
     }
 
@@ -160,6 +167,10 @@ enum StatuslineInstaller {
     /// one was captured at install time.
     static func uninstall() throws {
         guard var root = try readSettings() else { return }
+        // Removing rewrites settings.json too, and if the shim has been deleted
+        // by hand there is no chained command to restore — so this write can
+        // drop a third-party statusline. It gets the same backup as install.
+        try backupSettings()
         if let previous = chainedCommand(in: Paths.statuslineShim), !previous.isEmpty {
             root["statusLine"] = ["type": "command", "command": previous]
         } else {
