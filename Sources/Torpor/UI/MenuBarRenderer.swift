@@ -68,9 +68,13 @@ enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
         case .model:
             return "Share of this model's own weekly limit used so far."
         case .memory:
-            return "Memory held by all Claude Code sessions, as a share of your Mac's total RAM."
+            return "Memory held by all Claude Code sessions, as a share of your Mac's total RAM. Memory has no reset window, so this gauge has no time marker."
         }
     }
+
+    /// Whether the gauge carries the elapsed-time notch. Only windowed metrics
+    /// have a clock to compare against.
+    var showsPaceMarker: Bool { self != .memory }
 
     /// Windowed metrics reset; memory does not, so a countdown is meaningless.
     var hasResetWindow: Bool { self != .memory }
@@ -364,13 +368,33 @@ enum MenuBarRenderer {
     /// burning at twice the pace the window can carry. Fill to the left of the
     /// tick is ahead of schedule, fill past it is behind.
     private static func drawPaceTick(context: CGContext, track: CGRect, elapsed: Double?) {
-        guard let elapsed, elapsed > 0.01, elapsed < 0.99 else { return }
-        let x = track.minX + track.width * CGFloat(min(max(elapsed, 0), 1))
-        let tick = CGRect(x: x - 0.75, y: track.minY - 2, width: 1.5, height: track.height + 4)
-        context.addPath(CGPath(roundedRect: tick, cornerWidth: 0.75,
-                               cornerHeight: 0.75, transform: nil))
-        context.setFillColor(NSColor.labelColor.withAlphaComponent(0.75).cgColor)
-        context.fillPath()
+        guard let elapsed else { return }
+        // Clamp rather than bail: a tick at 2% is still information, and the
+        // old 0.01/0.99 guard silently hid it for most of a weekly window,
+        // which spends its first several hours below 1% elapsed.
+        let position = min(max(elapsed, 0.02), 0.98)
+        let x = track.minX + track.width * CGFloat(position)
+
+        // Cut a transparent notch instead of painting a coloured line.
+        //
+        // A painted tick has to pick a colour, and inside an NSImage drawing
+        // handler `labelColor` resolves against the app's appearance rather
+        // than the menu bar's — so on a dark menu bar it rendered near-black
+        // on a dark background and vanished. A notch is the absence of pixels:
+        // it shows the menu bar through the bar and is correct in light mode,
+        // dark mode, and against every fill colour.
+        let notch = CGRect(x: x - 1, y: track.minY - 2, width: 2, height: track.height + 4)
+        context.saveGState()
+        context.setBlendMode(.destinationOut)
+        context.setFillColor(NSColor.black.cgColor)
+        context.fill(notch)
+        context.restoreGState()
+
+        // A hairline on the leading edge so the notch still reads as a marker
+        // when the fill has not reached it yet and both sides are empty track.
+        let hairline = CGRect(x: x - 0.5, y: track.minY - 2, width: 1, height: track.height + 4)
+        context.setFillColor(NSColor.labelColor.withAlphaComponent(0.45).cgColor)
+        context.fill(hairline)
     }
 
 }
