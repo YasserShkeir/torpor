@@ -7,12 +7,19 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show toolchain
-        run: swift --version
+      - name: Select the newest Xcode
+        run: |
+          # `swift build --arch` routes through Xcode's build system, which
+          # rejects swiftLanguageMode on older toolchains — the default Xcode on
+          # a runner image is not always the newest installed.
+          ls /Applications | grep -i '^Xcode' || true
+          LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$LATEST"
+          swift --version
 
       - name: Cache build
         uses: actions/cache@v4
