@@ -53,31 +53,11 @@ enum PreviewRenderer {
                         sessionCount: 4, isStale: false,
                         windowElapsed: 0.55)
 
-                    // Text-only styles have no image at all.
-                    var textOrigin = x
-                    if let glyph = MenuBarRenderer.image(input) {
-                        // Template images carry no colour of their own; tint them
-                        // the way the menu bar would so the sheet is representative.
-                        if glyph.isTemplate {
-                            let tinted = NSImage(size: glyph.size, flipped: false) { rect in
-                                glyph.draw(in: rect)
-                                NSColor.labelColor.set()
-                                rect.fill(using: .sourceAtop)
-                                return true
-                            }
-                            tinted.draw(at: NSPoint(x: x, y: y + 8), from: .zero,
-                                        operation: .sourceOver, fraction: 1)
-                        } else {
-                            glyph.draw(at: NSPoint(x: x, y: y + 8), from: .zero,
-                                       operation: .sourceOver, fraction: 1)
-                        }
-                        textOrigin += glyph.size.width
-                    }
-
-                    let text = MenuBarRenderer.title(input)
-                    NSString(string: text).draw(
-                        at: NSPoint(x: textOrigin, y: y + 10),
-                        withAttributes: body(MenuBarRenderer.titleColor(input)))
+                    // Composite is what the menu bar actually draws, so the
+                    // sheet cannot disagree with the real item.
+                    let item = MenuBarRenderer.composite(input)
+                    item.draw(at: NSPoint(x: x, y: y + 6), from: .zero,
+                              operation: .sourceOver, fraction: 1)
                 }
             }
             return true

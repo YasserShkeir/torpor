@@ -135,8 +135,8 @@ struct PopoverView: View {
                 if let week = quota.sevenDay {
                     GaugeRow(label: "Week", window: week, windowLength: 7 * 86_400)
                 }
-                ForEach(quota.scoped.sorted(by: { $0.key < $1.key }), id: \.key) { name, window in
-                    GaugeRow(label: name, window: window, windowLength: 7 * 86_400)
+                ForEach(engine.visibleScopedRows, id: \.name) { row in
+                    GaugeRow(label: row.name, window: row.window, windowLength: 7 * 86_400)
                 }
             } else {
                 notConnectedCard

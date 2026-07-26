@@ -192,6 +192,12 @@ struct Preferences: Codable {
     var colorMode: ColorMode = .adaptive
     var menuBarMetric: MenuBarMetric = .highest
     var timeMarker: TimeMarker = .remaining
+    /// Model-scoped usage rows hidden from the popover, by server-supplied
+    /// name (e.g. "Sonnet"). Empty means show everything the server reports —
+    /// a row is never hidden by default, only by choice.
+    var hiddenUsageRows: Set<String> = []
+    /// Which model-scoped window the menu bar tracks when the metric is `.model`.
+    var menuBarModel: String = ""
     /// Remove the status item entirely when no session is running.
     ///
     /// Off by default. Torpor is an .accessory app with no dock icon and no
@@ -233,6 +239,8 @@ struct Preferences: Codable {
         colorMode = value(.colorMode, .adaptive)
         menuBarMetric = value(.menuBarMetric, .highest)
         timeMarker = value(.timeMarker, .remaining)
+        hiddenUsageRows = value(.hiddenUsageRows, [])
+        menuBarModel = value(.menuBarModel, "")
         hideWhenIdle = value(.hideWhenIdle, false)
         launchAtLogin = value(.launchAtLogin, false)
     }

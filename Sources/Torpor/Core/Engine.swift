@@ -106,6 +106,22 @@ final class Engine: ObservableObject {
             .reduce(0) { $0 + $1.totalFootprint }
     }
 
+    /// Model-scoped weekly windows the server has actually reported, sorted.
+    /// Only these can be shown or selected — Torpor never invents a row for a
+    /// model Anthropic has not sent a limit for.
+    var availableUsageRows: [String] {
+        (quota?.scoped.keys).map { Array($0).sorted() } ?? []
+    }
+
+    /// Rows the user has chosen to see, in display order.
+    var visibleScopedRows: [(name: String, window: QuotaSnapshot.Window)] {
+        guard let quota else { return [] }
+        return quota.scoped
+            .filter { !preferences.hiddenUsageRows.contains($0.key) }
+            .sorted { $0.key < $1.key }
+            .map { (name: $0.key, window: $0.value) }
+    }
+
     var weekTokens: TokenTotals {
         tokens.values.reduce(TokenTotals(), +)
     }
@@ -543,13 +559,23 @@ final class Engine: ObservableObject {
                 resets = top.0.resetsAt
                 windowLength = top.1
             }
+        case .model:
+            // A specific model-scoped weekly window, e.g. Fable or Sonnet.
+            // Matched case-insensitively because the server names the rows.
+            if let match = quota?.scoped.first(where: {
+                $0.key.caseInsensitiveCompare(preferences.menuBarModel) == .orderedSame
+            }) {
+                fraction = match.value.usedPercentage / 100
+                resets = match.value.resetsAt
+                windowLength = 7 * 86_400
+            }
         case .memory:
-            // Scale against a quarter of installed RAM. A hardcoded 4 GB pinned
-            // the gauge permanently full on any machine already past it, so
-            // hibernating 2 GB produced no visible change at all.
+            // Against *total* installed RAM. A quarter of it was still too small
+            // a denominator: 6.4 GB of sessions on an 18 GB machine clamped to
+            // 1.0, so the bar sat permanently full and hibernating 2 GB produced
+            // no visible change — which reads as "the progress bar is broken".
             let installed = Double(ProcessInfo.processInfo.physicalMemory)
-            let denominator = max(installed / 4, 1_073_741_824)
-            fraction = min(Double(totalFootprint) / denominator, 1)
+            fraction = installed > 0 ? min(Double(totalFootprint) / installed, 1) : nil
         }
 
         let percentText: String?

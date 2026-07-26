@@ -298,6 +298,17 @@ struct Tag: View {
 struct AppearanceTab: View {
     @ObservedObject var engine: Engine
 
+    private var colourExplanation: String {
+        switch engine.preferences.colorMode {
+        case .adaptive:
+            return "Green below 60%, amber to 85%, red above — on both the gauge and the number."
+        case .monochrome:
+            return "No colour at all: the gauge and number follow the menu bar's own tint. Tidy, but 95% looks the same as 5%."
+        case .accent:
+            return "Your system accent colour at every level, so the gauge shows the amount but not the urgency."
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -311,14 +322,67 @@ struct AppearanceTab: View {
                     }
                 }
 
-                Picker("Show", selection: $engine.preferences.menuBarMetric) {
-                    ForEach(MenuBarMetric.allCases) { Text($0.label).tag($0) }
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("Show", selection: $engine.preferences.menuBarMetric) {
+                        ForEach(MenuBarMetric.allCases) { Text($0.label).tag($0) }
+                    }
+
+                    if engine.preferences.menuBarMetric == .model {
+                        if engine.availableUsageRows.isEmpty {
+                            Label("No model-specific limits reported yet. Anthropic only sends these for models your plan meters separately, and only after a session has made a request.",
+                                  systemImage: "info.circle")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Picker("Model", selection: $engine.preferences.menuBarModel) {
+                                ForEach(engine.availableUsageRows, id: \.self) { Text($0).tag($0) }
+                            }
+                        }
+                    }
                 }
 
-                Picker("Colour", selection: $engine.preferences.colorMode) {
-                    ForEach(ColorMode.allCases) { Text($0.label).tag($0) }
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Usage rows in the panel").font(.headline)
+                    if engine.availableUsageRows.isEmpty {
+                        Text("The session and weekly windows always show. Model-specific rows — Fable, Sonnet, Opus — appear here once Anthropic reports a separate limit for them on your plan.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        ForEach(engine.availableUsageRows, id: \.self) { row in
+                            Toggle(isOn: Binding(
+                                get: { !engine.preferences.hiddenUsageRows.contains(row) },
+                                set: { shown in
+                                    if shown { engine.preferences.hiddenUsageRows.remove(row) }
+                                    else { engine.preferences.hiddenUsageRows.insert(row) }
+                                }
+                            )) {
+                                HStack(spacing: 6) {
+                                    Text(row).font(.callout)
+                                    if let window = engine.quota?.scoped[row] {
+                                        Text("\(Int(window.usedPercentage))% used")
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .controlSize(.small)
+                        }
+                        Text("Only models Anthropic actually meters separately on your plan are listed. Torpor never invents a row.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .pickerStyle(.segmented)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Colour", selection: $engine.preferences.colorMode) {
+                        ForEach(ColorMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(colourExplanation)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Picker("Reset countdown", selection: $engine.preferences.timeMarker) {
@@ -351,6 +415,31 @@ struct AppearanceTab: View {
     }
 }
 
+/// A menu bar item rendered exactly as the menu bar draws it — gauge plus
+/// coloured text — so the preview cannot disagree with the real thing.
+struct MenuBarSample: NSViewRepresentable {
+    let input: MenuBarRenderer.Input
+
+    func makeNSView(context: Context) -> NSImageView {
+        let view = NSImageView()
+        view.imageScaling = .scaleNone
+        view.imageAlignment = .alignLeft
+        // Without this the view collapses to zero width inside a SwiftUI
+        // stack whenever the image is nil, which is every text-only style.
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return view
+    }
+
+    func updateNSView(_ view: NSImageView, context: Context) {
+        view.image = MenuBarRenderer.composite(input)
+    }
+
+    @available(macOS 13.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSImageView, context: Context) -> CGSize? {
+        nsView.image?.size
+    }
+}
+
 struct StylePreview: View {
     let style: MenuBarStyle
     @ObservedObject var engine: Engine
@@ -362,7 +451,13 @@ struct StylePreview: View {
             engine.preferences.menuBarStyle = style
         } label: {
             HStack(spacing: 8) {
-                SampleItem(style: style, colorMode: engine.preferences.colorMode)
+                MenuBarSample(input: MenuBarRenderer.Input(
+                    style: style,
+                    colorMode: engine.preferences.colorMode,
+                    marker: .none,
+                    fraction: 0.68, percentText: "68%", resetsAt: nil,
+                    sessionCount: 3, isStale: false, windowElapsed: 0.45))
+                    .frame(height: 22)
                 Text(style.label).font(.caption)
                 Spacer()
                 if isSelected {
@@ -382,49 +477,22 @@ struct StylePreview: View {
     }
 }
 
-/// Renders a representative status item at a fixed 68% so the styles can be
-/// compared without waiting for real data.
-struct SampleItem: NSViewRepresentable {
-    let style: MenuBarStyle
-    let colorMode: ColorMode
-
-    func makeNSView(context: Context) -> NSImageView {
-        let view = NSImageView()
-        view.imageScaling = .scaleNone
-        return view
-    }
-
-    func updateNSView(_ view: NSImageView, context: Context) {
-        view.image = MenuBarRenderer.image(.init(
-            style: style, colorMode: colorMode, marker: .none,
-            fraction: 0.68, percentText: "68%", resetsAt: nil,
-            sessionCount: 3, isStale: false, windowElapsed: 0.45))
-    }
-}
-
+/// The real status item, with the user's live data.
 struct MenuBarPreview: View {
     @ObservedObject var engine: Engine
 
     var body: some View {
-        let input = engine.menuBarInput
-        HStack(spacing: 2) {
-            SampleItemLive(input: input)
-            Text(MenuBarRenderer.title(input))
-                .font(.system(size: 11, design: .default))
-                .monospacedDigit()
+        HStack {
+            MenuBarSample(input: engine.menuBarInput).frame(height: 22)
+            Spacer()
+            if engine.menuBarInput.fraction == nil {
+                Text("no value yet — the gauge fills once usage data arrives")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-    }
-}
-
-struct SampleItemLive: NSViewRepresentable {
-    let input: MenuBarRenderer.Input
-    func makeNSView(context: Context) -> NSImageView {
-        let view = NSImageView(); view.imageScaling = .scaleNone; return view
-    }
-    func updateNSView(_ view: NSImageView, context: Context) {
-        view.image = MenuBarRenderer.image(input)
     }
 }
 

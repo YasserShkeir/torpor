@@ -42,14 +42,15 @@ enum ColorMode: String, Codable, CaseIterable, Identifiable {
 
 /// Which number the menu bar shows when several are available.
 enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
-    case fiveHour, sevenDay, highest, memory
+    case fiveHour, sevenDay, highest, model, memory
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .fiveHour: return "Session (5-hour)"
-        case .sevenDay: return "Week"
+        case .sevenDay: return "Week (all models)"
         case .highest:  return "Whichever is highest"
+        case .model:    return "A specific model"
         case .memory:   return "Session memory"
         }
     }
@@ -171,6 +172,57 @@ enum MenuBarRenderer {
         // A stale reading is dimmed rather than recoloured: the level is still
         // the last known level, we just cannot vouch for it.
         return input.isStale ? base.withAlphaComponent(0.55) : base
+    }
+
+    /// The complete status item — gauge and coloured text composited into one
+    /// image, exactly as the menu bar draws it.
+    ///
+    /// The Appearance preview used to show only the gauge, with the text next
+    /// to it as a separate uncoloured SwiftUI `Text`. That meant text-only
+    /// styles previewed as nothing at all, and no preview ever showed the
+    /// colour it was previewing.
+    static func composite(_ input: Input, background: NSColor = .clear) -> NSImage {
+        let gaugeImage = image(input)
+        let text = title(input)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: titleColor(input),
+        ]
+        let textSize = text.isEmpty ? .zero : NSString(string: text).size(withAttributes: attributes)
+        let width = max((gaugeImage?.size.width ?? 0) + textSize.width + 6, 24)
+        let size = NSSize(width: width, height: height + 4)
+
+        return NSImage(size: size, flipped: false) { rect in
+            if background != .clear {
+                background.setFill()
+                rect.fill()
+            }
+            var x: CGFloat = 2
+            if let gaugeImage {
+                // Template images carry only alpha, so tint them the way the
+                // menu bar would rather than drawing them as transparent holes.
+                if gaugeImage.isTemplate {
+                    let tinted = NSImage(size: gaugeImage.size, flipped: false) { inner in
+                        gaugeImage.draw(in: inner)
+                        NSColor.labelColor.set()
+                        inner.fill(using: .sourceAtop)
+                        return true
+                    }
+                    tinted.draw(at: NSPoint(x: x, y: 2), from: .zero,
+                                operation: .sourceOver, fraction: 1)
+                } else {
+                    gaugeImage.draw(at: NSPoint(x: x, y: 2), from: .zero,
+                                    operation: .sourceOver, fraction: 1)
+                }
+                x += gaugeImage.size.width
+            }
+            if !text.isEmpty {
+                NSString(string: text).draw(
+                    at: NSPoint(x: x, y: 2 + (height - textSize.height) / 2),
+                    withAttributes: attributes)
+            }
+            return true
+        }
     }
 
     // MARK: - Drawing
