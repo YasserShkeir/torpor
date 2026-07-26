@@ -286,8 +286,7 @@ enum CLI {
                 style=\(engine.preferences.menuBarStyle.rawValue) \
                 colour=\(engine.preferences.colorMode.rawValue)
                 fraction=\(input.fraction.map { String(format: "%.3f", $0) } ?? "nil") \
-                windowElapsed=\(input.windowElapsed.map { String(format: "%.3f", $0) } ?? "nil") \
-                showsPaceMarker=\(engine.preferences.menuBarMetric.showsPaceMarker)
+                windowElapsed=\(input.windowElapsed.map { String(format: "%.3f", $0) } ?? "nil")
                 """
             }
             print(message)

@@ -74,7 +74,6 @@ enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
 
     /// Whether the gauge carries the elapsed-time notch. Only windowed metrics
     /// have a clock to compare against.
-    var showsPaceMarker: Bool { self != .memory }
 
     /// Windowed metrics reset; memory does not, so a countdown is meaningless.
     var hasResetWindow: Bool { self != .memory }
