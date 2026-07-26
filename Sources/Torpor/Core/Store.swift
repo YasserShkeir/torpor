@@ -181,11 +181,18 @@ struct Preferences: Codable {
 
     // Account
     var authMode: AuthMode = .statusline
+    /// Console spend is an additive panel, not a usage source: it cannot change
+    /// any gauge. This is its own switch rather than a radio option.
     var consoleUsageEnabled = false
-    /// The token-based modes stay inert until the user has seen and accepted
-    /// the account-risk disclosure. Defaulting this to true anywhere, including
-    /// in a migration, would defeat the point of showing it.
-    var acknowledgedTokenRisk = false
+    /// Modes whose account-risk disclosure the user has accepted.
+    ///
+    /// Per-mode, not one shared flag: with a single Bool, accepting the notice
+    /// under "Connect with Claude CLI" pre-accepted it for "Paste token" too,
+    /// so clicking the other radio merely to read its description made live
+    /// fetching permitted and the next poll fired at the endpoint before the
+    /// panel had been read. Defaulting this non-empty anywhere, including in a
+    /// migration, would defeat the point of showing it.
+    var acknowledgedRiskModes: Set<AuthMode> = []
 
     // Appearance
     var menuBarStyle: MenuBarStyle = .bar
@@ -219,19 +226,28 @@ struct Preferences: Codable {
         func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
             (try? c.decode(T.self, forKey: key)) ?? fallback
         }
-        pollSeconds = value(.pollSeconds, 5)
-        notifyIdleMinutes = value(.notifyIdleMinutes, 30)
-        notifyIdleFootprintMB = value(.notifyIdleFootprintMB, 250)
-        notifyQuotaPercent = value(.notifyQuotaPercent, 80)
+        // Clamped to the ranges the steppers enforce. The doc comment above
+        // advertises tolerance of a hand-edited file, and an out-of-range
+        // Double reaches `UInt64(...)` in Engine and traps on the first poll —
+        // crashing before any UI exists to fix it with.
+        func clamped(_ key: CodingKeys, _ fallback: Double, _ lower: Double, _ upper: Double) -> Double {
+            let raw: Double = value(key, fallback)
+            guard raw.isFinite else { return fallback }
+            return min(max(raw, lower), upper)
+        }
+        pollSeconds = clamped(.pollSeconds, 5, 2, 60)
+        notifyIdleMinutes = clamped(.notifyIdleMinutes, 30, 5, 480)
+        notifyIdleFootprintMB = clamped(.notifyIdleFootprintMB, 250, 50, 4000)
+        notifyQuotaPercent = clamped(.notifyQuotaPercent, 80, 50, 99)
         autoHibernateEnabled = value(.autoHibernateEnabled, false)
-        autoHibernateIdleMinutes = value(.autoHibernateIdleMinutes, 120)
-        autoHibernateFootprintMB = value(.autoHibernateFootprintMB, 300)
+        autoHibernateIdleMinutes = clamped(.autoHibernateIdleMinutes, 120, 30, 1440)
+        autoHibernateFootprintMB = clamped(.autoHibernateFootprintMB, 300, 100, 4000)
         launchTerminal = value(.launchTerminal, "Terminal")
         notificationsEnabled = value(.notificationsEnabled, true)
         groupByProject = value(.groupByProject, true)
         authMode = value(.authMode, .statusline)
         consoleUsageEnabled = value(.consoleUsageEnabled, false)
-        acknowledgedTokenRisk = value(.acknowledgedTokenRisk, false)
+        acknowledgedRiskModes = value(.acknowledgedRiskModes, [])
         // Styles that drew the app logo were removed; a preferences file
         // naming one decodes to nil and falls back rather than resetting
         // everything else the user configured.
@@ -249,8 +265,8 @@ struct Preferences: Codable {
     var liveFetchPermitted: Bool {
         switch authMode {
         case .statusline: return false
-        case .consoleAPIKey: return true
-        case .cliCredentials, .pastedToken: return acknowledgedTokenRisk
+        case .consoleAPIKey: return consoleUsageEnabled
+        case .cliCredentials, .pastedToken: return acknowledgedRiskModes.contains(authMode)
         }
     }
 

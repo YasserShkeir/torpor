@@ -195,16 +195,14 @@ struct PopoverView: View {
     private var notConnectedCard: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("No usage data yet").font(.callout).bold()
-            Text(engine.preferences.authMode == .statusline
-                 ? "Install the statusline shim and Torpor will read your limits from the payload Claude Code already provides — no credentials, no undocumented endpoints."
-                 : engine.accountStatus.detail)
+            Text(engine.usageEmptyExplanation)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
                 if engine.preferences.authMode == .statusline,
                    engine.statuslineState != .installed {
-                    Button("Install statusline shim") { engine.installStatusline() }
+                    Button("Set up usage reporting") { engine.installStatusline() }
                         .controlSize(.small)
                 }
                 Button("Open Settings", action: openSettings)

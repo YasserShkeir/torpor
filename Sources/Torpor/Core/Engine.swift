@@ -56,14 +56,41 @@ final class Engine: ObservableObject {
     /// disarm state that SwiftUI would otherwise keep alive for the app's
     /// lifetime (NSPopover retains its content view controller).
     @Published private(set) var confirmationGeneration = 0
+    /// When a live fetch is next permitted. The endpoint is rate limited to one
+    /// call every few minutes, so Refresh was otherwise a silent no-op for
+    /// anywhere from five minutes to an hour, with nothing on screen changing.
+    @Published private(set) var nextFetchAllowed: Date = .distantPast
+    private var saveTask: Task<Void, Never>?
+
     @Published var preferences = Preferences() {
         didSet {
-            preferences.save()
+            // Coalesced: the didSet fires on every repeat-key tick of a stepper,
+            // and each save is a synchronous pretty-printed encode plus atomic
+            // write on the main actor.
+            saveTask?.cancel()
+            let snapshot = preferences
+            saveTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard !Task.isCancelled else { return }
+                snapshot.save()
+                _ = self
+            }
             if oldValue.pollSeconds != preferences.pollSeconds { start() }
             if oldValue.launchAtLogin != preferences.launchAtLogin {
                 applyLaunchAtLogin()
             }
         }
+    }
+
+    /// Adopt whatever launchd actually reports.
+    ///
+    /// `LoginItem.isEnabled` existed and was called from nowhere, so revoking
+    /// the login item in System Settings left the toggle showing ON forever
+    /// while Torpor never re-registered.
+    func reconcileLoginItem() {
+        guard LoginItem.isAvailable else { return }
+        let actual = LoginItem.isEnabled
+        if actual != preferences.launchAtLogin { preferences.launchAtLogin = actual }
     }
 
     private func applyLaunchAtLogin() {
@@ -83,6 +110,10 @@ final class Engine: ObservableObject {
         var subscriptionType: String?
         var lastFetch: Date?
         var lastFetchError: String?
+        /// Which mode produced `lastFetchError`, so it can be dropped when the
+        /// user switches away rather than following them to a source that
+        /// never fetches and therefore can never clear it.
+        var errorMode: AuthMode?
         var claudeCodeCredentialsAvailable = false
     }
 
@@ -209,6 +240,7 @@ final class Engine: ObservableObject {
 
     init() {
         preferences = Preferences.load()
+        reconcileLoginItem()
         notifier.requestAuthorization()
         refresh()
         start()
@@ -225,6 +257,9 @@ final class Engine: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        // Flush anything the coalescing window was still holding.
+        saveTask?.cancel()
+        preferences.save()
     }
 
     // MARK: - Refresh
@@ -256,6 +291,10 @@ final class Engine: ObservableObject {
         }
         statuslineState = StatuslineInstaller.currentState()
         accountStatus.claudeCodeCredentialsAvailable = CredentialStore.claudeCodeCredentialsPresent()
+        if let mode = accountStatus.errorMode, mode != preferences.authMode {
+            accountStatus.lastFetchError = nil
+            accountStatus.errorMode = nil
+        }
         // Reconcile with launchd rather than trusting our own stored flag: the
         // user can revoke a login item in System Settings, and the toggle would
         // otherwise keep claiming it is on.
@@ -418,29 +457,72 @@ final class Engine: ObservableObject {
     private func refreshAccountStatus() {
         switch preferences.authMode {
         case .statusline:
-            let installed = statuslineState == .installed
-            accountStatus.connected = installed
-            accountStatus.detail = installed
-                ? "Reading usage from the Claude Code statusline"
-                : "Statusline shim not installed"
-        case .cliCredentials, .pastedToken:
-            if !preferences.acknowledgedTokenRisk {
+            // Five installer states used to collapse into two sentences, and
+            // "connected" was set purely from "the shim path is in
+            // settings.json" — so a fresh install, or an API-key account whose
+            // payload carries no rate_limits, showed a green seal forever while
+            // the popover said "No usage data yet" on the same screen.
+            switch statuslineState {
+            case .installed:
+                let snapshot = QuotaReader.read()
+                accountStatus.connected = snapshot != nil
+                if let snapshot {
+                    accountStatus.detail = snapshot.isStale
+                        ? "Numbers captured \(Fmt.duration(snapshot.age)) ago — they only refresh while a session is drawing its statusline"
+                        : "Reading usage from Claude Code · captured \(Fmt.duration(snapshot.age)) ago"
+                } else if QuotaReader.payloadExists {
+                    accountStatus.detail = "Claude Code is reporting, but sent no plan limits — those exist only for Claude.ai Pro and Max accounts"
+                } else {
+                    accountStatus.detail = "Set up — waiting for a session to draw its statusline"
+                }
+            case .needsRepair:
                 accountStatus.connected = false
-                accountStatus.detail = "Waiting for you to accept the account-risk notice"
+                accountStatus.detail = "Usage reporting isn't running — repair it below"
+            case .foreign:
+                accountStatus.connected = false
+                accountStatus.detail = "You already have a statusline — Torpor hasn't been added to it"
+            case let .settingsUnreadable(why):
+                accountStatus.connected = false
+                accountStatus.detail = "Can't read ~/.claude/settings.json — \(why)"
+            case .notInstalled:
+                accountStatus.connected = false
+                accountStatus.detail = "Usage reporting not set up yet"
+            }
+
+        case .cliCredentials, .pastedToken:
+            if !preferences.acknowledgedRiskModes.contains(preferences.authMode) {
+                accountStatus.connected = false
+                accountStatus.detail = "Accept the risk notice to connect"
             } else if let token = CredentialStore.subscriptionToken() {
-                accountStatus.connected = !token.isExpired
                 accountStatus.subscriptionType = token.subscriptionType
-                accountStatus.detail = token.isExpired
-                    ? "Token expired — reconnect"
-                    : "Connected" + (token.subscriptionType.map { " · \($0)" } ?? "")
+                if token.isExpired {
+                    accountStatus.connected = false
+                    accountStatus.detail = "Token expired — reconnect"
+                } else if accountStatus.lastFetch != nil, accountStatus.lastFetchError == nil {
+                    // Evidence, not existence. A bare pasted string has no
+                    // expiry, so `!isExpired` was true for the word "test".
+                    accountStatus.connected = true
+                    accountStatus.detail = "Connected" + (token.subscriptionType.map { " · \($0)" } ?? "")
+                } else {
+                    accountStatus.connected = false
+                    accountStatus.detail = "Token stored — not yet verified"
+                }
             } else {
                 accountStatus.connected = false
                 accountStatus.detail = "No token stored"
             }
+
         case .consoleAPIKey:
-            let hasKey = CredentialStore.consoleKey() != nil
-            accountStatus.connected = hasKey
-            accountStatus.detail = hasKey ? "Console API key stored" : "No API key stored"
+            if CredentialStore.consoleKey() == nil {
+                accountStatus.connected = false
+                accountStatus.detail = "No API key stored"
+            } else if accountStatus.lastFetch != nil, accountStatus.lastFetchError == nil {
+                accountStatus.connected = true
+                accountStatus.detail = "Console spend is loading"
+            } else {
+                accountStatus.connected = false
+                accountStatus.detail = "API key stored — not yet verified"
+            }
         }
     }
 
@@ -454,14 +536,17 @@ final class Engine: ObservableObject {
         guard !isFetching else { return }
         isFetching = true
         defer { isFetching = false }
-        guard await api.canFetch else { return }
+        guard await api.canFetch else {
+            nextFetchAllowed = await api.nextFetchDate
+            return
+        }
 
         do {
             switch preferences.authMode {
             case .cliCredentials, .pastedToken:
                 // Belt and braces: no network call on this path without consent,
                 // whichever caller got us here.
-                guard preferences.acknowledgedTokenRisk,
+                guard preferences.acknowledgedRiskModes.contains(preferences.authMode),
                       let token = CredentialStore.subscriptionToken() else { return }
                 let (snapshot, balance) = try await api.fetchSubscription(
                     token: token, clientVersion: clientVersion)
@@ -479,7 +564,9 @@ final class Engine: ObservableObject {
             // A refusal is expected traffic here, not a failure state worth
             // shouting about — the statusline snapshot keeps the UI populated.
             accountStatus.lastFetchError = error.localizedDescription
+            accountStatus.errorMode = preferences.authMode
         }
+        nextFetchAllowed = await api.nextFetchDate
     }
 
     /// Says *why* the session came back in a new window rather than its old
@@ -537,17 +624,48 @@ final class Engine: ObservableObject {
     /// Clear only the subscription token. Split from the Console key because a
     /// single shared `disconnect()` meant rotating an API key also destroyed
     /// the user's subscription credential.
+    /// Why the usage panel is empty, in the user's terms.
+    ///
+    /// The old text said "install the shim" unconditionally, which is wrong
+    /// once it *is* installed — and permanently unachievable advice for an
+    /// API-key, Bedrock or Vertex account, which has no plan quota to report
+    /// and would otherwise be told to wait for data that will never arrive.
+    var usageEmptyExplanation: String {
+        guard preferences.authMode == .statusline else { return accountStatus.detail }
+        switch statuslineState {
+        case .notInstalled:
+            return "Torpor reads your limits from the payload Claude Code already gives your statusline — no credentials, no network calls. Set it up to see them here."
+        case .needsRepair:
+            return "Usage reporting was installed to a path Claude Code can't execute, so no numbers have arrived. Repair it in Settings."
+        case .foreign:
+            return "You already have a statusline. Torpor can run alongside it — install from Settings and your prompt stays exactly as it is."
+        case .settingsUnreadable:
+            return "Torpor can't read ~/.claude/settings.json, so it can't set up usage reporting. Fix or move that file and try again."
+        case .installed:
+            return QuotaReader.payloadExists
+                ? "Claude Code is reporting, but sent no plan limits. Those exist only for Claude.ai Pro and Max accounts — an API-key account has no plan quota to show."
+                : "Set up and waiting. Numbers appear the next time a session draws its statusline."
+        }
+    }
+
     /// Whether a subscription token is on disk, regardless of consent state —
     /// so the delete button can be shown even after consent is withdrawn.
     var hasStoredSubscriptionToken: Bool { CredentialStore.subscriptionToken() != nil }
+    var hasStoredConsoleKey: Bool { CredentialStore.consoleKey() != nil }
 
     func clearSubscriptionCredential() {
         CredentialStore.clearSubscriptionToken()
         if preferences.authMode == .cliCredentials || preferences.authMode == .pastedToken {
             preferences.authMode = .statusline
         }
-        preferences.acknowledgedTokenRisk = false
+        preferences.acknowledgedRiskModes = []
         credits = CreditBalance()
+        // A snapshot obtained from the API has no source session id; leaving it
+        // in place meant the app kept showing percentages fetched with the
+        // token you just deleted, indefinitely.
+        if quota?.sourceSessionId == nil { quota = nil }
+        accountStatus.lastFetch = nil
+        accountStatus.lastFetchError = nil
         refresh()
     }
 

@@ -32,13 +32,13 @@ enum AuthMode: String, Codable, CaseIterable, Identifiable {
     var summary: String {
         switch self {
         case .statusline:
-            return "Reads the usage payload Claude Code already gives your statusline. No credentials leave your machine."
+            return "Reads the usage payload Claude Code already gives your statusline. No credentials, no network calls. Plan limits are only reported for Claude.ai Pro and Max accounts."
         case .cliCredentials:
-            return "Imports the OAuth token Claude Code stored in your Keychain. macOS will ask your permission."
+            return "Copies the credentials Claude Code stored in your Keychain — including its refresh token — into Torpor's own Keychain item. macOS will ask your permission."
         case .pastedToken:
             return "For a token you already have. Stored in your login Keychain, never written to disk in plain text."
         case .consoleAPIKey:
-            return "Anthropic Console spend, daily cost and per-key breakdown. Separate from your subscription limits."
+            return "Anthropic Console spend: month-to-date cost, a daily chart and a per-model breakdown. Separate from your subscription limits, and needs an organisation account with Admin API access."
         }
     }
 
@@ -55,6 +55,10 @@ enum AuthMode: String, Codable, CaseIterable, Identifiable {
             Max plan credentials. In January 2026 Anthropic deployed anti-spoofing \
             safeguards and accounts were banned for triggering abuse filters. Using this \
             option puts your Anthropic account at risk, not Torpor's.
+
+            Torpor reaches that endpoint the same way the enforcement targeted: it sends \
+            your OAuth token with a claude-code/<version> User-Agent copied from your \
+            installed CLI. That is the behaviour the safeguards look for.
             """
         }
     }

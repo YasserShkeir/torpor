@@ -27,12 +27,14 @@ struct QuotaSnapshot: Codable, Equatable {
 /// `rate_limits.seven_day.used_percentage` and their `resets_at` timestamps —
 /// documented, server-computed, and already in the user's possession.
 ///
-/// The alternative that circulates in this ecosystem — reading the OAuth token
-/// out of the Keychain and calling `api.anthropic.com/api/oauth/usage` with a
-/// spoofed `claude-code/<version>` User-Agent — is the exact pattern Anthropic
-/// enforced against in January 2026, and the enforcement included automated
-/// bans of end users' accounts. Torpor does not do that, and should not be
-/// changed to do it.
+/// This is the default and the only path that needs no credentials.
+///
+/// Torpor *can* also read the OAuth token out of the Keychain and call
+/// `api.anthropic.com/api/oauth/usage` with a `claude-code/<version>`
+/// User-Agent — see UsageAPI — which is the exact pattern Anthropic enforced
+/// against in January 2026, with automated bans of end users' accounts. That
+/// path is inert unless the user selects it and accepts a disclosure naming
+/// that risk. It must never become reachable without that consent.
 enum QuotaReader {
 
     static var snapshotURL: URL {
@@ -53,6 +55,15 @@ enum QuotaReader {
         var rate_limits: Limits?
         var session_id: String?
         var captured_at: Double?
+    }
+
+    /// Whether Claude Code has written a statusline payload at all.
+    ///
+    /// Lets the UI tell "nothing has reported yet" apart from "something
+    /// reported but carried no plan limits" — the permanent state of an
+    /// API-key, Bedrock or Vertex account, which has no plan quota to show.
+    static var payloadExists: Bool {
+        FileManager.default.fileExists(atPath: snapshotURL.path)
     }
 
     static func read() -> QuotaSnapshot? {

@@ -52,6 +52,17 @@ struct AccountTab: View {
 
     private var mode: AuthMode { engine.preferences.authMode }
 
+    private var refreshHelp: String {
+        if !engine.preferences.liveFetchPermitted {
+            return "Accept the account-risk notice first."
+        }
+        let wait = engine.nextFetchAllowed.timeIntervalSinceNow
+        if wait > 0 {
+            return "Anthropic rate-limits this endpoint. Next refresh available in \(Fmt.duration(wait))."
+        }
+        return "Ask Anthropic for current usage."
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -59,9 +70,32 @@ struct AccountTab: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Usage source").font(.headline)
-                    ForEach(AuthMode.allCases) { option in
+                    Text("Where Torpor reads your plan limits from. These are mutually exclusive.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    ForEach(AuthMode.allCases.filter { $0 != .consoleAPIKey }) { option in
                         sourceRow(option)
                     }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Console spend").font(.headline)
+                        Tag("Org accounts only", color: .secondary)
+                    }
+                    Toggle("Show Anthropic Console billing", isOn: Binding(
+                        get: { engine.preferences.consoleUsageEnabled },
+                        set: { on in
+                            engine.preferences.consoleUsageEnabled = on
+                            engine.preferences.authMode = on ? .consoleAPIKey
+                                : (engine.preferences.authMode == .consoleAPIKey ? .statusline : engine.preferences.authMode)
+                        }
+                    ))
+                    .font(.callout)
+                    Text("Adds a spend panel. It cannot change the usage gauges — Console billing and your subscription limits are separate ledgers, and the Admin API is unavailable to individual accounts.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Divider()
@@ -69,6 +103,15 @@ struct AccountTab: View {
             }
             .padding(20)
         }
+        // The settings window is created once and kept, so @State survives
+        // closing it: a token pasted but not saved stayed in memory and was
+        // prefilled next time — in cleartext if the eye had been toggled.
+        .onDisappear {
+            pastedToken = ""
+            consoleKey = ""
+            showToken = false
+        }
+        .onChange(of: mode) { showToken = false }
     }
 
     private var statusCard: some View {
@@ -89,10 +132,9 @@ struct AccountTab: View {
             Spacer()
             if mode != .statusline {
                 Button("Refresh") { engine.forceRefreshAccount() }
-                    .disabled(!engine.preferences.liveFetchPermitted)
-                    .help(engine.preferences.liveFetchPermitted
-                          ? "Ask Anthropic for current usage. Rate limited to once every few minutes."
-                          : "Accept the account-risk notice first.")
+                    .disabled(!engine.preferences.liveFetchPermitted
+                              || Date() < engine.nextFetchAllowed)
+                    .help(refreshHelp)
             }
         }
         .padding(12)
@@ -111,9 +153,9 @@ struct AccountTab: View {
                     HStack(spacing: 6) {
                         Text(option.label).font(.callout).foregroundStyle(.primary)
                         if option.isSanctioned {
-                            Tag("Supported", color: .green)
+                            Tag("Allowed by Anthropic", color: .green)
                         } else {
-                            Tag("Account risk", color: .red)
+                            Tag("Can get you banned", color: .red)
                         }
                     }
                     Text(option.summary)
@@ -132,8 +174,8 @@ struct AccountTab: View {
         switch mode {
         case .statusline:
             VStack(alignment: .leading, spacing: 10) {
-                Text("Statusline shim").font(.headline)
-                Text("Claude Code passes its statusline command a JSON payload containing your 5-hour and weekly rate-limit percentages. The shim copies that payload to a file and then runs whatever statusline you already had, so your prompt is unchanged.")
+                Text("Usage reporter for Claude Code").font(.headline)
+                Text("Torpor installs a small script as your Claude Code statusline. Claude Code hands that script your 5-hour and weekly usage percentages every time your prompt redraws; the script saves them for Torpor and then runs whatever statusline you already had, so your prompt looks exactly the same. If you had no statusline, it prints a minimal one — the model name and the current folder.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
@@ -145,15 +187,15 @@ struct AccountTab: View {
                         Button("Remove") { engine.uninstallStatusline() }
                     case .foreign(let command):
                         VStack(alignment: .leading) {
-                            Text("Another statusline is configured").font(.caption)
+                            Text("You already have a statusline").font(.caption)
                             Text(command).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Spacer()
-                        Button("Install (chains to it)") { engine.installStatusline() }
+                        Button("Install (keeps yours)") { engine.installStatusline() }
                     case .needsRepair:
                         VStack(alignment: .leading) {
-                            Text("Installed at an unusable path").font(.caption).foregroundStyle(.orange)
-                            Text("The old location contained a space, so Claude Code could not run it.")
+                            Text("Usage reporting isn't running").font(.caption).foregroundStyle(.orange)
+                            Text("An earlier version installed the script to a folder whose name contains a space, which Claude Code can't execute — so no usage numbers have been arriving. Repair moves it and keeps any statusline you had.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -182,10 +224,16 @@ struct AccountTab: View {
             VStack(alignment: .leading, spacing: 12) {
                 RiskPanel(
                     note: mode.riskNote ?? "",
-                    accepted: $engine.preferences.acknowledgedTokenRisk
+                    accepted: Binding(
+                        get: { engine.preferences.acknowledgedRiskModes.contains(mode) },
+                        set: { accepted in
+                            if accepted { engine.preferences.acknowledgedRiskModes.insert(mode) }
+                            else { engine.preferences.acknowledgedRiskModes.remove(mode) }
+                        }
+                    )
                 )
 
-                if engine.preferences.acknowledgedTokenRisk {
+                if engine.preferences.acknowledgedRiskModes.contains(mode) {
                     if mode == .cliCredentials {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Connect with Claude CLI").font(.headline)
@@ -232,10 +280,15 @@ struct AccountTab: View {
                 // inside it, so unticking the risk box hid the only way to
                 // delete the token it had just stopped consenting to.
                 if engine.hasStoredSubscriptionToken {
-                    Button("Disconnect and delete the stored token", role: .destructive) {
-                        engine.clearSubscriptionCredential()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button("Disconnect and delete the stored token", role: .destructive) {
+                            engine.clearSubscriptionCredential()
+                        }
+                        .controlSize(.small)
+                        Text("Torpor switches back to reading usage from the Claude Code statusline, and you'll need to accept the risk notice again to reconnect.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .controlSize(.small)
                 }
             }
 
@@ -281,6 +334,7 @@ struct AccountTab: View {
 
                 Button("Clear API key", role: .destructive) { engine.clearConsoleCredential() }
                     .controlSize(.small)
+                    .disabled(!engine.hasStoredConsoleKey)
             }
         }
     }
@@ -299,7 +353,7 @@ struct RiskPanel: View {
             Text(note)
                 .font(.caption)
                 .fixedSize(horizontal: false, vertical: true)
-            Toggle("I understand and want to use this anyway", isOn: $accepted)
+            Toggle("I accept the risk — show me the connection options", isOn: $accepted)
                 .font(.caption)
         }
         .padding(12)
@@ -332,7 +386,9 @@ struct AppearanceTab: View {
     private var colourExplanation: String {
         switch engine.preferences.colorMode {
         case .adaptive:
-            return "Green below 60%, amber to 85%, red above — on both the gauge and the number."
+            return engine.preferences.menuBarMetric == .memory
+                ? "Green below 60%, amber to 85%, red above — measured against your Mac's total RAM, so this usually stays green unless Claude Code is dominating the machine."
+                : "Green below 60%, amber to 85%, red above — on both the gauge and the number."
         case .monochrome:
             return "No colour at all: the gauge and number follow the menu bar's own tint. Tidy, but 95% looks the same as 5%."
         case .accent:
@@ -371,6 +427,15 @@ struct AppearanceTab: View {
                             Picker("Model", selection: $engine.preferences.menuBarModel) {
                                 ForEach(engine.availableUsageRows, id: \.self) { Text($0).tag($0) }
                             }
+                            // menuBarModel defaults to "" and is never pruned
+                            // when the server stops reporting a row, so without
+                            // this the Picker shows a blank selection and the
+                            // menu bar reads "no model set".
+                            .onAppear {
+                                if !engine.availableUsageRows.contains(engine.preferences.menuBarModel) {
+                                    engine.preferences.menuBarModel = engine.availableUsageRows.first ?? ""
+                                }
+                            }
                         }
                     }
                 }
@@ -378,7 +443,7 @@ struct AppearanceTab: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Usage rows in the panel").font(.headline)
+                    Text("Rows shown when you click the menu bar icon").font(.headline)
                     if engine.availableUsageRows.isEmpty {
                         Text("The 5-hour and weekly windows always show. Model-specific rows — currently Sonnet and Opus — appear here once Anthropic reports a separate limit for them on your plan.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -425,7 +490,7 @@ struct AppearanceTab: View {
                     .pickerStyle(.segmented)
                     .disabled(!engine.preferences.menuBarMetric.hasResetWindow)
                     Text(engine.preferences.menuBarMetric.hasResetWindow
-                         ? "A percentage on its own does not tell you whether to slow down. The countdown does. Reset times outside today carry their weekday."
+                         ? "A percentage on its own does not tell you whether to slow down. The countdown does. Reset times later this week carry their weekday; anything further out carries the date."
                          : "Session memory has no reset window, so there is no countdown to show.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -531,7 +596,7 @@ struct MenuBarPreview: View {
             MenuBarSample(input: engine.menuBarInput).frame(height: 22)
             Spacer()
             if engine.menuBarInput.fraction == nil {
-                Text("no value yet — the gauge fills once usage data arrives")
+                Text("no value yet — this fills once usage data arrives")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -550,13 +615,21 @@ struct SessionsTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
+                    Text("Torpor itself").font(.headline)
                     Toggle("Launch Torpor at login", isOn: $engine.preferences.launchAtLogin)
                         .font(.callout)
                         .disabled(!LoginItem.isAvailable)
-                    if !LoginItem.isAvailable {
-                        Text("Available once Torpor is run as an app bundle.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
+                    Text(LoginItem.isAvailable
+                         ? "A session monitor that only runs when you remember to open it can't notice something went idle three days ago."
+                         : "Available once Torpor is run as an app bundle.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Toggle("Hide from the menu bar when no session is running",
+                           isOn: $engine.preferences.hideWhenIdle)
+                        .font(.callout)
+                    Text("Torpor stays running. Open it again from Spotlight or Finder to bring the icon back. Always suppressed if the session list stops parsing, so the app can't vanish at the moment something has gone wrong.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Divider()
@@ -572,8 +645,8 @@ struct SessionsTab: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Refresh").font(.headline)
-                    LabeledStepper(title: "Poll processes every",
+                    Text("Update rate").font(.headline)
+                    LabeledStepper(title: "Check sessions every",
                                    value: $engine.preferences.pollSeconds,
                                    step: 1, range: 2...60, unit: "s")
                 }
@@ -581,12 +654,18 @@ struct SessionsTab: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Revive").font(.headline)
+                    Text("Reopening a hibernated session").font(.headline)
+                    Text("Hibernate ends a session's processes and frees their memory; the conversation is saved and Revive reopens it. Freeze only pauses CPU and frees very little.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Picker("Open sessions in", selection: $engine.preferences.launchTerminal) {
                         Text("Terminal").tag("Terminal")
                         Text("iTerm").tag("iTerm")
                     }
                     .pickerStyle(.segmented)
+                    Text("Only Terminal and iTerm can be driven from outside on macOS, so those are the two choices. Sessions started anywhere else still hibernate and revive fine — they just reopen in the app selected here.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("Torpor first tries to reopen a session in the exact Terminal or iTerm tab it was ended in — that tab is usually still open at a prompt, so your window layout survives, and this setting is not used. It applies only when that tab can't be reached: it was closed, the app isn't running, or the session ran somewhere Torpor can't script, such as VS Code's built-in terminal. macOS asks for Automation permission the first time.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -621,7 +700,7 @@ struct SessionsTab: View {
                         LabeledStepper(title: "Idle longer than",
                                        value: $engine.preferences.autoHibernateIdleMinutes,
                                        step: 30, range: 30...1440, unit: "min")
-                        LabeledStepper(title: "Holding at least",
+                        LabeledStepper(title: "…and using at least",
                                        value: $engine.preferences.autoHibernateFootprintMB,
                                        step: 50, range: 100...4000, unit: "MB")
                     }
@@ -640,8 +719,13 @@ struct NotificationsTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Toggle("Enable notifications", isOn: $engine.preferences.notificationsEnabled)
-                    .font(.callout)
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Enable notifications", isOn: $engine.preferences.notificationsEnabled)
+                        .font(.callout)
+                    Text("Torpor also needs permission in System Settings › Notifications. If alerts never arrive, check there first — this switch cannot override it.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Group {
                     VStack(alignment: .leading, spacing: 6) {
@@ -657,12 +741,13 @@ struct NotificationsTab: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Quota").font(.headline)
-                        LabeledStepper(title: "Warn at",
+                        Text("Usage limits").font(.headline)
+                        LabeledStepper(title: "Warn when a limit passes",
                                        value: $engine.preferences.notifyQuotaPercent,
                                        step: 5, range: 50...99, unit: "%")
-                        Text("Each alert is sent at most once an hour and re-arms once the condition clears.")
+                        Text("Checked against your 5-hour and weekly windows separately, so each can alert on its own. Model-specific limits and memory don't trigger this.")
                             .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .disabled(!engine.preferences.notificationsEnabled)
@@ -695,9 +780,9 @@ struct AboutTab: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("What the numbers mean").font(.headline)
-                    Bullet("Memory is phys_footprint, which includes pages macOS has compressed. RSS excludes them and understates an idle session by more than 10x.")
-                    Bullet("Freezing stops CPU. It frees very little memory — macOS has usually already compressed 90% of an idle session. Hibernating frees the whole footprint.")
-                    Bullet("Quota percentages come from Claude Code's own statusline payload unless you have chosen another source.")
+                    Bullet("Torpor counts the memory a session actually costs your Mac, including pages macOS has compressed to save space. Activity Monitor's default column leaves those out, which can make an idle session look more than ten times smaller than it is — and that hidden memory is exactly what hibernating gives back.")
+                    Bullet("Freeze pauses a session's processes so they use no CPU — useful for a runaway session, but it barely dents memory, because macOS has usually already compressed most of an idle session. Hibernate ends the session and gives back all of its memory.")
+                    Bullet("Usage percentages come from Claude Code's own statusline. If you have chosen another source, Torpor shows whichever reading is more recent.")
                 }
 
                 Divider()

@@ -88,8 +88,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Attributed rather than plain, so the number carries the same
         // green/amber/red signal as the gauge. In monochrome mode this
         // resolves to labelColor and the menu bar tints it as usual.
+        // Percentage style draws no image, and the title is empty until usage
+        // data arrives — which together produced a status item of zero width,
+        // indistinguishable from the app having failed to launch.
+        var titleText = MenuBarRenderer.title(input)
+        if button.image == nil, titleText.isEmpty { titleText = " —" }
         button.attributedTitle = NSAttributedString(
-            string: MenuBarRenderer.title(input),
+            string: titleText,
             attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: MenuBarRenderer.titleColor(input),
@@ -190,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func showSettings() {
         popover.performClose(nil)
+        engine.reconcileLoginItem()
 
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)

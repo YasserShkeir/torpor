@@ -200,6 +200,10 @@ actor UsageAPI {
             .init(name: "ending_at", value: formatter.string(from: now)),
             .init(name: "bucket_width", value: "1d"),
             .init(name: "limit", value: "31"),
+            // Without this the buckets come back aggregated with no `model`
+            // key, so `byModel` stayed empty and the per-model breakdown the
+            // UI advertises rendered nothing at all.
+            .init(name: "group_by[]", value: "model"),
         ]
 
         var request = URLRequest(url: components.url!)
