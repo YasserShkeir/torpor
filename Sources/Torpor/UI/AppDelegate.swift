@@ -1,0 +1,212 @@
+import AppKit
+import Combine
+import SwiftUI
+
+// AppKit delivers every delegate callback on the main thread, and Engine is
+// main-actor isolated, so the whole controller lives on the main actor.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+
+    private var statusItem: NSStatusItem!
+    private var popover: NSPopover!
+    private var settingsWindow: NSWindow?
+    private let engine = Engine()
+    private var cancellables = Set<AnyCancellable>()
+    private var eventMonitor: Any?
+    private var clockTimer: Timer?
+    /// Set when the user re-launches Torpor while the item is auto-hidden, so
+    /// they always have a way back to Settings with no sessions running.
+    private var revealedWhileIdle = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        installMainMenu()
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(togglePopover)
+        redrawStatusItem()
+
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
+        popover.contentViewController = NSHostingController(
+            rootView: PopoverView(engine: engine, openSettings: { [weak self] in
+                self?.showSettings()
+            })
+        )
+
+        engine.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                // objectWillChange fires before the mutation lands, so defer a
+                // tick to read the settled values.
+                DispatchQueue.main.async { self?.redrawStatusItem() }
+            }
+            .store(in: &cancellables)
+
+        // Countdown markers tick independently of the session poll, so the
+        // "resets in 42m" text stays honest without polling processes faster.
+        clockTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.redrawStatusItem() }
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        engine.stop()
+        clockTimer?.invalidate()
+    }
+
+    /// Opening Torpor again while it is already running is the escape hatch
+    /// from auto-hide: reveal the item and show the popover, rather than doing
+    /// nothing and looking broken.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        revealedWhileIdle = true
+        redrawStatusItem()
+        if !popover.isShown { togglePopover() }
+        return true
+    }
+
+    // MARK: - Status item
+
+    private func redrawStatusItem() {
+        guard let button = statusItem.button else { return }
+        let input = engine.menuBarInput
+
+        // With nothing running there is nothing worth a slot in the menu bar,
+        // so the item disappears entirely. Re-launching Torpor (or opening it
+        // from Spotlight) reveals it again — see applicationShouldHandleReopen.
+        // Auto-hide is suppressed when the registry looks broken: "no sessions"
+        // and "we could not parse any session" look identical from here, and
+        // vanishing on an upstream format change is the worst possible failure.
+        let idle = engine.sessions.isEmpty
+        let mayHide = engine.preferences.hideWhenIdle && !engine.registryLooksBroken
+        statusItem.isVisible = !mayHide || !idle || revealedWhileIdle
+        if !idle { revealedWhileIdle = false }
+
+        button.image = MenuBarRenderer.image(input)   // nil for text-only styles
+        button.imagePosition = .imageLeading
+        // Attributed rather than plain, so the number carries the same
+        // green/amber/red signal as the gauge. In monochrome mode this
+        // resolves to labelColor and the menu bar tints it as usual.
+        button.attributedTitle = NSAttributedString(
+            string: MenuBarRenderer.title(input),
+            attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: MenuBarRenderer.titleColor(input),
+            ])
+
+        let count = engine.sessions.count
+        var tooltip = count == 0
+            ? "No Claude Code sessions"
+            : "\(count) session\(count == 1 ? "" : "s") · \(Fmt.bytes(engine.totalFootprint))"
+        if let quota = engine.quota, let week = quota.sevenDay {
+            tooltip += "\nWeek \(Int(week.usedPercentage))%"
+        }
+        button.toolTip = tooltip
+
+        button.setAccessibilityLabel("Torpor")
+        button.setAccessibilityValue(tooltip.replacingOccurrences(of: "\n", with: ", "))
+    }
+
+    @objc private func togglePopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            engine.refresh()
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+            watchForOutsideClicks()
+        }
+    }
+
+    private func watchForOutsideClicks() {
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.popover.performClose(nil)
+        }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
+        }
+        // NSPopover keeps its content view controller alive for the app's
+        // lifetime, so SwiftUI @State survives closing. Without this, an armed
+        // "Sleep 4" confirmation is still armed hours later — one stray click
+        // from ending four sessions, on a row that may have re-sorted under the
+        // cursor in the meantime.
+        engine.disarmConfirmations()
+    }
+
+    /// AppKit routes Cut/Copy/Paste through the Edit menu's key equivalents.
+    /// With no main menu they never reach the first responder — and the Account
+    /// tab's whole interaction is pasting a 200-character token into a
+    /// SecureField, where right-click paste is commonly suppressed.
+    private func installMainMenu() {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About Torpor", action: #selector(showSettingsFromMenu), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let settings = NSMenuItem(title: "Settings…", action: #selector(showSettingsFromMenu), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit Torpor",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        main.addItem(editItem)
+
+        let windowItem = NSMenuItem()
+        let window = NSMenu(title: "Window")
+        window.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowItem.submenu = window
+        main.addItem(windowItem)
+
+        NSApp.mainMenu = main
+        NSApp.windowsMenu = window
+    }
+
+    @objc private func showSettingsFromMenu() { showSettings() }
+
+    // MARK: - Settings
+
+    func showSettings() {
+        popover.performClose(nil)
+
+        if let window = settingsWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Torpor Settings"
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.contentViewController = NSHostingController(rootView: SettingsView(engine: engine))
+        settingsWindow = window
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
