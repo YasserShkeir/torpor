@@ -342,14 +342,25 @@ enum MenuBarRenderer {
 
             if let fraction = input.fraction, fraction > 0 {
                 let clamped = min(max(fraction, 0), 1)
-                // Never render a sliver so thin it reads as empty.
-                let filled = max(track.height, track.width * clamped)
-                let fillRect = CGRect(x: track.minX, y: track.minY,
-                                      width: filled, height: track.height)
-                context.addPath(CGPath(roundedRect: fillRect, cornerWidth: radius,
+                // A floor of one bar-height turned every low value into a
+                // circle — 20% on a 30pt bar is 6pt, so the "sliver guard"
+                // produced a 7x7 dot that read as a bullet, not a fill.
+                let filled = max(2, track.width * clamped)
+
+                // Clip to the track and fill a plain rectangle, rather than
+                // drawing a rounded rect of the fill's own width. A rounded
+                // rect 6pt wide on a 7pt-tall bar is a circle, so every low
+                // reading rendered as a dot instead of a short bar. Clipping
+                // gives a fill that inherits the track's rounded left cap and
+                // is square where it stops.
+                context.saveGState()
+                context.addPath(CGPath(roundedRect: track, cornerWidth: radius,
                                        cornerHeight: radius, transform: nil))
+                context.clip()
                 context.setFillColor(fillColor.withAlphaComponent(input.isStale ? 0.45 : 1).cgColor)
-                context.fillPath()
+                context.fill(CGRect(x: track.minX, y: track.minY,
+                                    width: filled, height: track.height))
+                context.restoreGState()
             }
 
             drawPaceTick(context: context, track: track, elapsed: input.windowElapsed)
@@ -372,7 +383,11 @@ enum MenuBarRenderer {
         // Clamp rather than bail: a tick at 2% is still information, and the
         // old 0.01/0.99 guard silently hid it for most of a weekly window,
         // which spends its first several hours below 1% elapsed.
-        let position = min(max(elapsed, 0.02), 0.98)
+        // Inset so the marker always lands on the track itself. Clamping to
+        // 0/1 put it under the rounded cap or past the end, where it read as a
+        // stray line beside the bar rather than a mark on it.
+        let inset = 2 / max(track.width, 1)
+        let position = min(max(elapsed, inset), 1 - inset)
         let x = track.minX + track.width * CGFloat(position)
 
         // Cut a transparent notch instead of painting a coloured line.
@@ -383,18 +398,14 @@ enum MenuBarRenderer {
         // on a dark background and vanished. A notch is the absence of pixels:
         // it shows the menu bar through the bar and is correct in light mode,
         // dark mode, and against every fill colour.
-        let notch = CGRect(x: x - 1, y: track.minY - 2, width: 2, height: track.height + 4)
+        // Confined to the track's own height so it reads as a gap *in* the
+        // bar. Overflowing it made the marker look like separate furniture.
+        let notch = CGRect(x: x - 0.9, y: track.minY, width: 1.8, height: track.height)
         context.saveGState()
         context.setBlendMode(.destinationOut)
         context.setFillColor(NSColor.black.cgColor)
         context.fill(notch)
         context.restoreGState()
-
-        // A hairline on the leading edge so the notch still reads as a marker
-        // when the fill has not reached it yet and both sides are empty track.
-        let hairline = CGRect(x: x - 0.5, y: track.minY - 2, width: 1, height: track.height + 4)
-        context.setFillColor(NSColor.labelColor.withAlphaComponent(0.45).cgColor)
-        context.fill(hairline)
     }
 
 }

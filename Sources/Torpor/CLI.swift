@@ -231,6 +231,67 @@ enum CLI {
             }
             print("cd \(shellQuote(record.cwd)) && \(record.resumeCommand)")
 
+        case "--render-live":
+            // Renders the exact item the menu bar is drawing right now, at 8x,
+            // so it can be inspected rather than squinted at.
+            guard let out = arguments.dropFirst(2).first else { fail("--render-live needs a path") }
+            let app = NSApplication.shared
+            app.setActivationPolicy(.prohibited)
+            let message = MainActor.assumeIsolated { () -> String in
+                let engine = Engine()
+                engine.refresh()
+                let saved = engine.preferences.menuBarMetric
+                var rows: [(String, NSImage)] = []
+                for metric in MenuBarMetric.allCases {
+                    engine.preferences.menuBarMetric = metric
+                    rows.append((metric.label,
+                                 MenuBarRenderer.composite(engine.menuBarInput,
+                                                           background: NSColor(white: 0.13, alpha: 1))))
+                }
+                engine.preferences.menuBarMetric = saved
+                let input = engine.menuBarInput
+
+                let scale: CGFloat = 6
+                let labelWidth: CGFloat = 150
+                let rowHeight = (rows.first?.1.size.height ?? 22) * scale + 8
+                let widest = rows.map(\.1.size.width).max() ?? 60
+                let big = NSSize(width: labelWidth + widest * scale + 16,
+                                 height: rowHeight * CGFloat(rows.count))
+                let scaled = NSImage(size: big, flipped: false) { rect in
+                    NSColor(white: 0.13, alpha: 1).setFill()
+                    rect.fill()
+                    NSGraphicsContext.current?.imageInterpolation = .none
+                    let attrs: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                        .foregroundColor: NSColor.white,
+                    ]
+                    for (index, row) in rows.enumerated() {
+                        let y = big.height - rowHeight * CGFloat(index + 1)
+                        NSString(string: row.0).draw(at: NSPoint(x: 10, y: y + rowHeight / 2 - 8),
+                                                     withAttributes: attrs)
+                        row.1.draw(in: NSRect(x: labelWidth, y: y + 4,
+                                              width: row.1.size.width * scale,
+                                              height: row.1.size.height * scale))
+                    }
+                    return true
+                }
+                guard let tiff = scaled.tiffRepresentation,
+                      let rep = NSBitmapImageRep(data: tiff),
+                      let png = rep.representation(using: .png, properties: [:]) else {
+                    return "encode failed"
+                }
+                try? png.write(to: URL(fileURLWithPath: out))
+                return """
+                metric=\(engine.preferences.menuBarMetric.rawValue) \
+                style=\(engine.preferences.menuBarStyle.rawValue) \
+                colour=\(engine.preferences.colorMode.rawValue)
+                fraction=\(input.fraction.map { String(format: "%.3f", $0) } ?? "nil") \
+                windowElapsed=\(input.windowElapsed.map { String(format: "%.3f", $0) } ?? "nil") \
+                showsPaceMarker=\(engine.preferences.menuBarMetric.showsPaceMarker)
+                """
+            }
+            print(message)
+
         case "--render":
             // Offscreen UI render, for review and for CI diffing.
             guard let dir = arguments.dropFirst(2).first else {

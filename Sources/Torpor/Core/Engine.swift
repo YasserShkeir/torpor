@@ -583,6 +583,10 @@ final class Engine: ObservableObject {
             percentText = totalFootprint > 0 ? Fmt.bytes(totalFootprint) : nil
         } else if let fraction {
             percentText = "\(Int((fraction * 100).rounded()))%"
+        } else if preferences.menuBarMetric == .model {
+            // Selected "a specific model" but the server reports no limit for
+            // it — say so rather than showing an empty bar and no number.
+            percentText = preferences.menuBarModel.isEmpty ? "no model set" : "no limit"
         } else {
             percentText = nil
         }
