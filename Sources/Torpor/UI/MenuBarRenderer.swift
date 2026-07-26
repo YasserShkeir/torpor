@@ -8,14 +8,13 @@ import AppKit
 /// user nothing there — every style shows the number or the gauge and nothing
 /// else. The logo lives in the popover, the Settings window and the Dock.
 enum MenuBarStyle: String, Codable, CaseIterable, Identifiable {
-    case percentage, bar, battery
+    case percentage, bar
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .percentage: return "Percentage"
         case .bar:        return "Progress bar"
-        case .battery:    return "Battery"
         }
     }
 }
@@ -54,6 +53,27 @@ enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
         case .memory:   return "Session memory"
         }
     }
+
+    /// What the gauge is a proportion *of*. A bar with no label is only
+    /// meaningful if the user has been told what fills it — "5.63 GB" beside a
+    /// half-full bar otherwise invites the reasonable question "half of what?".
+    var gaugeMeaning: String {
+        switch self {
+        case .fiveHour:
+            return "Share of your rolling 5-hour limit used so far."
+        case .sevenDay:
+            return "Share of your weekly limit used so far, across all models."
+        case .highest:
+            return "Whichever of the 5-hour and weekly limits is further along."
+        case .model:
+            return "Share of this model's own weekly limit used so far."
+        case .memory:
+            return "Memory held by all Claude Code sessions, as a share of your Mac's total RAM."
+        }
+    }
+
+    /// Windowed metrics reset; memory does not, so a countdown is meaningless.
+    var hasResetWindow: Bool { self != .memory }
 }
 
 /// A percentage on its own does not tell you whether to slow down; the reset
@@ -147,10 +167,24 @@ enum MenuBarRenderer {
         return joined.isEmpty ? "" : " \(joined)"
     }
 
+    /// A reset timestamp, with a day attached whenever it is not today.
+    ///
+    /// The weekly window resets up to seven days out, and rendering that as a
+    /// bare "07:00" is unreadable — it names an hour without saying which of
+    /// seven mornings. Time alone is only unambiguous within today.
     private static func clock(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("j:mm")
+        let calendar = Calendar.autoupdatingCurrent
+
+        if calendar.isDateInToday(date) {
+            formatter.setLocalizedDateFormatFromTemplate("j:mm")
+        } else if let week = calendar.date(byAdding: .day, value: 7, to: Date()), date < week {
+            // Within the coming week a weekday name is enough and stays short.
+            formatter.setLocalizedDateFormatFromTemplate("EEE j:mm")
+        } else {
+            formatter.setLocalizedDateFormatFromTemplate("d MMM j:mm")
+        }
         return formatter.string(from: date)
     }
 
@@ -160,7 +194,6 @@ enum MenuBarRenderer {
         switch input.style {
         case .percentage: return nil
         case .bar:        return gauge(input, width: 34)
-        case .battery:    return battery(input)
         }
     }
 
@@ -340,42 +373,4 @@ enum MenuBarRenderer {
         context.fillPath()
     }
 
-    /// Battery outline with proportional charge.
-    private static func battery(_ input: Input) -> NSImage {
-        let size = NSSize(width: 30, height: height)
-        let fillColor = tint(for: input.fraction, mode: input.colorMode)
-
-        let image = NSImage(size: size, flipped: false) { rect in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-
-            let body = CGRect(x: 1, y: rect.midY - 5.5, width: 23, height: 11)
-            let outline = CGPath(roundedRect: body, cornerWidth: 3, cornerHeight: 3, transform: nil)
-            context.addPath(outline)
-            context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.55).cgColor)
-            context.setLineWidth(1.2)
-            context.strokePath()
-
-            // Terminal nub.
-            let nub = CGRect(x: body.maxX + 1, y: rect.midY - 2.2, width: 2, height: 4.4)
-            context.addPath(CGPath(roundedRect: nub, cornerWidth: 1, cornerHeight: 1, transform: nil))
-            context.setFillColor(NSColor.labelColor.withAlphaComponent(0.55).cgColor)
-            context.fillPath()
-
-            if let fraction = input.fraction {
-                let inset = body.insetBy(dx: 2, dy: 2)
-                let clamped = min(max(fraction, 0), 1)
-                let width = max(1.5, inset.width * clamped)
-                let charge = CGRect(x: inset.minX, y: inset.minY, width: width, height: inset.height)
-                context.addPath(CGPath(roundedRect: charge, cornerWidth: 1.5,
-                                       cornerHeight: 1.5, transform: nil))
-                context.setFillColor(fillColor.withAlphaComponent(input.isStale ? 0.45 : 1).cgColor)
-                context.fillPath()
-
-                drawPaceTick(context: context, track: inset, elapsed: input.windowElapsed)
-            }
-            return true
-        }
-        image.isTemplate = (input.colorMode == .monochrome)
-        return image
-    }
 }

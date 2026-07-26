@@ -99,8 +99,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         var tooltip = count == 0
             ? "No Claude Code sessions"
             : "\(count) session\(count == 1 ? "" : "s") · \(Fmt.bytes(engine.totalFootprint))"
+        // Name what the gauge is a proportion of — a bar with no label is
+        // otherwise just a rectangle.
+        tooltip += "\n" + engine.preferences.menuBarMetric.gaugeMeaning
         if let quota = engine.quota, let week = quota.sevenDay {
-            tooltip += "\nWeek \(Int(week.usedPercentage))%"
+            tooltip += "\nWeek \(Int(week.usedPercentage))% used"
         }
         button.toolTip = tooltip
 

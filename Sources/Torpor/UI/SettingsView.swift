@@ -326,6 +326,9 @@ struct AppearanceTab: View {
                     Picker("Show", selection: $engine.preferences.menuBarMetric) {
                         ForEach(MenuBarMetric.allCases) { Text($0.label).tag($0) }
                     }
+                    Text(engine.preferences.menuBarMetric.gaugeMeaning)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     if engine.preferences.menuBarMetric == .model {
                         if engine.availableUsageRows.isEmpty {
@@ -389,8 +392,12 @@ struct AppearanceTab: View {
                         ForEach(TimeMarker.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    Text("A percentage on its own does not tell you whether to slow down. The countdown does.")
+                    .disabled(!engine.preferences.menuBarMetric.hasResetWindow)
+                    Text(engine.preferences.menuBarMetric.hasResetWindow
+                         ? "A percentage on its own does not tell you whether to slow down. The countdown does. Reset times outside today carry their weekday."
+                         : "Session memory has no reset window, so there is no countdown to show.")
                         .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Divider()
