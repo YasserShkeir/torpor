@@ -270,61 +270,7 @@ enum MenuBarRenderer {
     /// size, eleven petals is roughly two pixels each and collapses into a
     /// grey smudge. Template-rendered so it follows the menu bar's own tint and
     /// inverts correctly in dark mode.
-    private static func glyph(_ input: Input) -> NSImage {
-        let size = NSSize(width: height, height: height)
-        let image = NSImage(size: size, flipped: false) { rect in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            let center = CGPoint(x: rect.midX, y: rect.midY)
 
-            let spokes = 8
-            let outer = rect.height * 0.46
-            let inner = outer * 0.20
-            let halfWidth = outer * 0.20
-            let tipWidth = outer * 0.055
-
-            let burst = CGMutablePath()
-            for index in 0..<spokes {
-                let angle = (CGFloat(index) / CGFloat(spokes)) * 2 * .pi - .pi / 2
-                let tip = index.isMultiple(of: 2) ? outer : outer * 0.74
-                let transform = CGAffineTransform(translationX: center.x, y: center.y)
-                    .rotated(by: angle)
-                let waist = inner + (tip - inner) * 0.5
-
-                burst.move(to: CGPoint(x: inner, y: -halfWidth), transform: transform)
-                burst.addQuadCurve(to: CGPoint(x: tip, y: -tipWidth),
-                                   control: CGPoint(x: waist, y: -halfWidth * 0.62),
-                                   transform: transform)
-                burst.addArc(center: CGPoint(x: tip, y: 0), radius: tipWidth,
-                             startAngle: -.pi / 2, endAngle: .pi / 2,
-                             clockwise: false, transform: transform)
-                burst.addQuadCurve(to: CGPoint(x: inner, y: halfWidth),
-                                   control: CGPoint(x: waist, y: halfWidth * 0.62),
-                                   transform: transform)
-                burst.closeSubpath()
-            }
-            let hub = outer * 0.30
-            burst.addEllipse(in: CGRect(x: center.x - hub, y: center.y - hub,
-                                        width: hub * 2, height: hub * 2))
-
-            context.addPath(burst)
-            context.setFillColor(NSColor.black.cgColor)
-            context.fillPath()
-
-            // If the item is still shown with nothing running, fade it rather
-            // than draw a full-strength mark for zero sessions.
-            if input.sessionCount == 0 {
-                context.setBlendMode(.destinationIn)
-                context.setFillColor(NSColor.black.withAlphaComponent(0.4).cgColor)
-                context.fill(rect)
-                context.setBlendMode(.normal)
-            }
-            return true
-        }
-        image.isTemplate = true
-        return image
-    }
-
-    /// Horizontal track with a proportional fill and a pace marker.
     private static func gauge(_ input: Input, width: CGFloat) -> NSImage {
         let size = NSSize(width: width, height: height)
         let fillColor = tint(for: input.fraction, mode: input.colorMode)
@@ -332,38 +278,33 @@ enum MenuBarRenderer {
         let image = NSImage(size: size, flipped: false) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
 
-            let track = CGRect(x: 2, y: rect.midY - 3.5, width: width - 4, height: 7)
-            let radius: CGFloat = 3.5
+            let hasTime = input.windowElapsed != nil
+            // With a time bar the pair is centred as a unit; without one the
+            // usage bar sits on the centre line by itself.
+            let usage = CGRect(x: 2,
+                               y: hasTime ? rect.midY - 1 : rect.midY - 3,
+                               width: width - 4, height: 6)
+            drawBar(context: context, track: usage,
+                    fraction: input.fraction,
+                    // Track derived from the fill rather than labelColor: label
+                    // colours resolve against the *app's* appearance inside an
+                    // NSImage handler, not the menu bar's, so a light-appearance
+                    // app drew a near-black track onto a dark menu bar.
+                    trackColor: fillColor.withAlphaComponent(0.22),
+                    fillColor: fillColor.withAlphaComponent(input.isStale ? 0.45 : 1),
+                    radius: 3)
 
-            context.addPath(CGPath(roundedRect: track, cornerWidth: radius,
-                                   cornerHeight: radius, transform: nil))
-            context.setFillColor(NSColor.labelColor.withAlphaComponent(0.18).cgColor)
-            context.fillPath()
-
-            if let fraction = input.fraction, fraction > 0 {
-                let clamped = min(max(fraction, 0), 1)
-                // A floor of one bar-height turned every low value into a
-                // circle — 20% on a 30pt bar is 6pt, so the "sliver guard"
-                // produced a 7x7 dot that read as a bullet, not a fill.
-                let filled = max(2, track.width * clamped)
-
-                // Clip to the track and fill a plain rectangle, rather than
-                // drawing a rounded rect of the fill's own width. A rounded
-                // rect 6pt wide on a 7pt-tall bar is a circle, so every low
-                // reading rendered as a dot instead of a short bar. Clipping
-                // gives a fill that inherits the track's rounded left cap and
-                // is square where it stops.
-                context.saveGState()
-                context.addPath(CGPath(roundedRect: track, cornerWidth: radius,
-                                       cornerHeight: radius, transform: nil))
-                context.clip()
-                context.setFillColor(fillColor.withAlphaComponent(input.isStale ? 0.45 : 1).cgColor)
-                context.fill(CGRect(x: track.minX, y: track.minY,
-                                    width: filled, height: track.height))
-                context.restoreGState()
+            if let elapsed = input.windowElapsed {
+                let time = CGRect(x: 2, y: usage.minY - 5, width: width - 4, height: 3)
+                drawBar(context: context, track: time,
+                        fraction: elapsed,
+                        trackColor: fillColor.withAlphaComponent(0.16),
+                        // Deliberately not the usage colour: the time bar is a
+                        // reference line, and colouring it by usage severity
+                        // would imply the clock is the thing going wrong.
+                        fillColor: NSColor.systemGray.withAlphaComponent(0.9),
+                        radius: 1.5)
             }
-
-            drawPaceTick(context: context, track: track, elapsed: input.windowElapsed)
             return true
         }
         // Adaptive and accent modes draw real colour, so they must not be
@@ -372,40 +313,32 @@ enum MenuBarRenderer {
         return image
     }
 
-    /// A tick showing how far through the reset window you are.
-    ///
-    /// This is what turns a percentage into a decision. 60% used means nothing
-    /// on its own; 60% used with 30% of the window elapsed means you are
-    /// burning at twice the pace the window can carry. Fill to the left of the
-    /// tick is ahead of schedule, fill past it is behind.
-    private static func drawPaceTick(context: CGContext, track: CGRect, elapsed: Double?) {
-        guard let elapsed else { return }
-        // Clamp rather than bail: a tick at 2% is still information, and the
-        // old 0.01/0.99 guard silently hid it for most of a weekly window,
-        // which spends its first several hours below 1% elapsed.
-        // Inset so the marker always lands on the track itself. Clamping to
-        // 0/1 put it under the rounded cap or past the end, where it read as a
-        // stray line beside the bar rather than a mark on it.
-        let inset = 2 / max(track.width, 1)
-        let position = min(max(elapsed, inset), 1 - inset)
-        let x = track.minX + track.width * CGFloat(position)
+    /// Rounded track with a clipped proportional fill.
+    private static func drawBar(context: CGContext, track: CGRect, fraction: Double?,
+                                trackColor: NSColor, fillColor: NSColor, radius: CGFloat) {
+        let shape = CGPath(roundedRect: track, cornerWidth: radius,
+                           cornerHeight: radius, transform: nil)
+        context.addPath(shape)
+        context.setFillColor(trackColor.cgColor)
+        context.fillPath()
 
-        // Cut a transparent notch instead of painting a coloured line.
-        //
-        // A painted tick has to pick a colour, and inside an NSImage drawing
-        // handler `labelColor` resolves against the app's appearance rather
-        // than the menu bar's — so on a dark menu bar it rendered near-black
-        // on a dark background and vanished. A notch is the absence of pixels:
-        // it shows the menu bar through the bar and is correct in light mode,
-        // dark mode, and against every fill colour.
-        // Confined to the track's own height so it reads as a gap *in* the
-        // bar. Overflowing it made the marker look like separate furniture.
-        let notch = CGRect(x: x - 0.9, y: track.minY, width: 1.8, height: track.height)
+        guard let fraction, fraction > 0 else { return }
+        // Clip and fill a plain rect so the fill inherits the track's rounded
+        // left cap instead of becoming a circle at low values.
         context.saveGState()
-        context.setBlendMode(.destinationOut)
-        context.setFillColor(NSColor.black.cgColor)
-        context.fill(notch)
+        context.addPath(shape)
+        context.clip()
+        context.setFillColor(fillColor.cgColor)
+        context.fill(CGRect(x: track.minX, y: track.minY,
+                            width: max(2, track.width * min(max(fraction, 0), 1)),
+                            height: track.height))
         context.restoreGState()
     }
 
+    /// Radial burst, matching the app icon.
+    ///
+    /// Simplified to 8 spokes rather than the icon's 11: at an 18pt menu bar
+    /// size, eleven petals is roughly two pixels each and collapses into a
+    /// grey smudge. Template-rendered so it follows the menu bar's own tint and
+    /// inverts correctly in dark mode.
 }

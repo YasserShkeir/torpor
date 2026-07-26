@@ -416,9 +416,7 @@ struct AppearanceTab: View {
                     Text("Live preview").font(.caption).foregroundStyle(.secondary)
                     MenuBarPreview(engine: engine)
                     if engine.preferences.menuBarStyle == .bar {
-                        Text(engine.preferences.menuBarMetric.showsPaceMarker
-                             ? "The notch in the bar marks how far through the current window you are. Fill short of it means you are inside the pace the window can carry; fill past it means you are burning faster than the clock."
-                             : "No notch on this metric — memory does not reset, so there is no elapsed time to mark. Pick a 5-hour, weekly or model limit to see it.")
+                        Text("Two bars: usage on top, elapsed time underneath. If the top bar is shorter than the bottom one you are inside the pace your window can carry; if it is longer you are burning faster than the clock.")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

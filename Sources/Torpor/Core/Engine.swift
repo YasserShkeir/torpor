@@ -594,12 +594,22 @@ final class Engine: ObservableObject {
         // Anthropic publishes the window structure (rolling 5-hour, weekly) but
         // not a start timestamp, so elapsed is derived from the reset time and
         // the known window length.
-        var elapsed: Double?
-        if let resets, let windowLength, windowLength > 0 {
+        func elapsedFraction(resets: Date?, length: TimeInterval?) -> Double? {
+            guard let resets, let length, length > 0 else { return nil }
             let remaining = resets.timeIntervalSinceNow
-            if remaining > 0, remaining <= windowLength {
-                elapsed = 1 - (remaining / windowLength)
-            }
+            guard remaining > 0, remaining <= length else { return nil }
+            return 1 - (remaining / length)
+        }
+
+        var elapsed = elapsedFraction(resets: resets, length: windowLength)
+        if elapsed == nil {
+            // Metrics with no window of their own — session memory — still
+            // benefit from the clock: "how far through my 5-hour window am I"
+            // is useful regardless of what the gauge above it is measuring.
+            // Falling back here is what makes the time bar always present
+            // rather than silently missing on one metric.
+            elapsed = elapsedFraction(resets: quota?.fiveHour?.resetsAt, length: 5 * 3600)
+                ?? elapsedFraction(resets: quota?.sevenDay?.resetsAt, length: 7 * 86_400)
         }
 
         return .init(style: preferences.menuBarStyle,
