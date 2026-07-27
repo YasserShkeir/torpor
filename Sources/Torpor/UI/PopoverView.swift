@@ -360,6 +360,7 @@ struct GaugeRow: View {
             InlineBar(fraction: min(window.usedPercentage / 100, 1),
                       elapsed: elapsed, tint: tint)
                 .frame(height: 6)
+                .padding(.vertical, 3)
 
             Text("\(Int(window.usedPercentage))%")
                 .font(.system(size: 10, design: .rounded)).bold()
@@ -395,12 +396,23 @@ struct InlineBar: View {
                     .fill(tint)
                     // Never render a sliver so thin it reads as empty.
                     .frame(width: max(height, width * fraction))
-                if let elapsed, elapsed > 0.01, elapsed < 0.99 {
-                    Capsule()
-                        .fill(Color.primary.opacity(0.55))
-                        .frame(width: 1.5, height: height + 3)
-                        .offset(x: width * elapsed - 0.75)
-                        .help("\(Int(elapsed * 100))% of this window has elapsed")
+                if let elapsed {
+                    // Same marker as the menu bar: solid white, standing proud
+                    // of the bar at both ends so it reads as a deliberate mark.
+                    // The faint dark edge keeps it legible in light mode, where
+                    // white over the unfilled track would otherwise vanish.
+                    let inset = 1.5 / max(width, 1)
+                    let position = min(max(elapsed, inset), 1 - inset)
+                    ZStack {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.35))
+                            .frame(width: 3, height: height + 7)
+                        Rectangle()
+                            .fill(.white)
+                            .frame(width: 2, height: height + 6)
+                    }
+                    .offset(x: width * position - 1.5)
+                    .help("\(Int(elapsed * 100))% of this window has elapsed")
                 }
             }
         }

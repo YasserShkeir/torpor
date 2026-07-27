@@ -513,8 +513,8 @@ struct AppearanceTab: View {
                     MenuBarPreview(engine: engine)
                     if engine.preferences.menuBarStyle == .bar {
                         Text(engine.preferences.menuBarMetric.hasResetWindow
-                             ? "Two bars: usage on top, elapsed time underneath. If the top bar is shorter than the bottom one you are inside the pace your window can carry; if it is longer you are burning faster than the clock."
-                             : "Two bars: memory as a share of RAM on top, and underneath, how far through your quota window you are. They measure different things, so comparing their lengths tells you nothing.")
+                             ? "The white line marks how far through the window you are. Fill short of the line means you are inside the pace your window can carry; fill past it means you are burning faster than the clock."
+                             : "The bar is memory as a share of RAM. The white line marks how far through your quota window you are — a different measurement, shown here only because the clock is useful regardless.")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

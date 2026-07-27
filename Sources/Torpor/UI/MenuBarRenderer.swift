@@ -75,8 +75,6 @@ enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// Whether the gauge carries the elapsed-time notch. Only windowed metrics
-    /// have a clock to compare against.
 
     /// Windowed metrics reset; memory does not, so a countdown is meaningless.
     var hasResetWindow: Bool { self != .memory }
@@ -273,6 +271,14 @@ enum MenuBarRenderer {
     /// grey smudge. Template-rendered so it follows the menu bar's own tint and
     /// inverts correctly in dark mode.
 
+    /// One bar, with a white marker showing how far through the window you are.
+    ///
+    /// This replaced a two-bar layout, which was itself a replacement for a
+    /// transparent notch. The notch failed because it was cut *out* of the bar —
+    /// on a dark menu bar a gap is the same colour as the background, so there
+    /// was nothing to see. The fix is not subtlety: the marker is solid white
+    /// and stands proud of the bar at both ends, so it reads as a deliberate
+    /// mark rather than a rendering artefact.
     private static func gauge(_ input: Input, width: CGFloat) -> NSImage {
         let size = NSSize(width: width, height: height)
         let fillColor = tint(for: input.fraction, mode: input.colorMode)
@@ -280,40 +286,52 @@ enum MenuBarRenderer {
         let image = NSImage(size: size, flipped: false) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
 
-            let hasTime = input.windowElapsed != nil
-            // With a time bar the pair is centred as a unit; without one the
-            // usage bar sits on the centre line by itself.
-            let usage = CGRect(x: 2,
-                               y: hasTime ? rect.midY - 1 : rect.midY - 3,
-                               width: width - 4, height: 6)
-            drawBar(context: context, track: usage,
+            let track = CGRect(x: 2, y: rect.midY - 3.5, width: width - 4, height: 7)
+            drawBar(context: context, track: track,
                     fraction: input.fraction,
                     // Track derived from the fill rather than labelColor: label
                     // colours resolve against the *app's* appearance inside an
                     // NSImage handler, not the menu bar's, so a light-appearance
-                    // app drew a near-black track onto a dark menu bar.
+                    // app painted a near-black track onto a dark menu bar.
                     trackColor: fillColor.withAlphaComponent(0.22),
                     fillColor: fillColor.withAlphaComponent(input.isStale ? 0.45 : 1),
-                    radius: 3)
+                    radius: 3.5)
 
-            if let elapsed = input.windowElapsed {
-                let time = CGRect(x: 2, y: usage.minY - 5, width: width - 4, height: 3)
-                drawBar(context: context, track: time,
-                        fraction: elapsed,
-                        trackColor: fillColor.withAlphaComponent(0.16),
-                        // Deliberately not the usage colour: the time bar is a
-                        // reference line, and colouring it by usage severity
-                        // would imply the clock is the thing going wrong.
-                        fillColor: NSColor.systemGray.withAlphaComponent(0.9),
-                        radius: 1.5)
-            }
+            drawTimeMarker(context: context, track: track, elapsed: input.windowElapsed)
             return true
         }
-        // Adaptive and accent modes draw real colour, so they must not be
-        // template-rendered or the menu bar will flatten them to one tone.
+        // Adaptive and accent draw real colour, so they must not be
+        // template-rendered or the menu bar flattens them to one tone.
         image.isTemplate = (input.colorMode == .monochrome)
         return image
     }
+
+    /// Vertical white line marking elapsed time in the current window.
+    ///
+    /// Overhangs the track by 3pt at each end, and that overhang is what makes
+    /// it legible: inside the bar it contrasts with the fill, outside it breaks
+    /// the bar's silhouette so the eye finds it without hunting. A faint dark
+    /// edge keeps it visible on a light menu bar, where plain white over the
+    /// unfilled part of the track would otherwise vanish.
+    private static func drawTimeMarker(context: CGContext, track: CGRect, elapsed: Double?) {
+        guard let elapsed else { return }
+        // Inset so the marker always lands on the track rather than under a
+        // rounded cap or past the end.
+        let inset = 1.5 / max(track.width, 1)
+        let position = min(max(elapsed, inset), 1 - inset)
+        let x = track.minX + track.width * CGFloat(position)
+
+        let overhang: CGFloat = 3
+        let markerWidth: CGFloat = 2
+        let bar = CGRect(x: x - markerWidth / 2, y: track.minY - overhang,
+                         width: markerWidth, height: track.height + overhang * 2)
+
+        context.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
+        context.fill(bar.insetBy(dx: -0.5, dy: -0.5))
+        context.setFillColor(NSColor.white.cgColor)
+        context.fill(bar)
+    }
+
 
     /// Rounded track with a clipped proportional fill.
     private static func drawBar(context: CGContext, track: CGRect, fraction: Double?,
