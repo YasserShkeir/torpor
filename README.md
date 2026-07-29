@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="Resources/icon-1024.png" width="128" alt="Torpor">
+  <img src="Resources/icon-1024.png" width="120" alt="Torpor">
 </p>
 
 <h1 align="center">Torpor</h1>
 
 <p align="center">
-  A macOS menu bar app for Claude Code sessions: see what's running, what it
-  costs you in memory and quota, and put idle sessions to sleep without losing them.
+  A macOS menu bar app for Claude Code sessions. See what each one actually costs
+  in memory, and put the idle ones to sleep without losing them.
 </p>
 
 <p align="center">
-  <a href="https://github.com/YasserShkeir/torpor/stargazers">★ Star</a> ·
+  <a href="https://github.com/YasserShkeir/torpor/stargazers">Star</a> ·
   <a href="https://github.com/YasserShkeir/torpor/issues/new/choose">Report a bug</a> ·
   <a href="https://github.com/YasserShkeir/torpor/discussions">Discussions</a> ·
-  <a href="https://github.com/YasserShkeir/torpor/releases">Releases</a>
+  <a href="https://github.com/YasserShkeir/torpor/releases/latest">Releases</a>
 </p>
 
 <p align="center">
@@ -22,411 +22,219 @@
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-black">
 </p>
 
-Built for the case where you've got a dozen terminal tabs open, six of them
-haven't been touched in three days, and your Mac is swapping.
+<p align="center">
+  <img src="docs/images/menubar-metrics.png" width="620" alt="The menu bar item, showing each metric it can display">
+</p>
 
 ---
+
+I had twelve sessions open across six repos and six of them hadn't been touched
+in days. My Mac was swapping. Activity Monitor wasn't much help, because most of
+the memory isn't in the `claude` process at all. It's in the MCP servers hanging
+off it, and those show up as unrelated rows.
+
+So I wrote this.
 
 ## What it does
 
-**Sessions, grouped by project.** Every running Claude Code session, with its
-status, idle time, and memory — including its MCP server processes, which are
-usually the larger half of the bill. Sessions sharing a working directory are
-grouped together, so three sessions in the same repo read as one project with two
-working and one idle rather than three unrelated rows.
+Lists every running session grouped by folder, with status, idle time, and total
+memory including its MCP subtree. Three sessions in one repo read as one project
+with two working and one idle, not three unrelated rows.
 
-**Hibernate a whole project at once.** When every session in a group is idle,
-the group header offers a single action to end them all and reclaim the memory.
-Sessions are terminated concurrently and revive individually.
+Then two things you can do to a session.
 
-**Usage.** Your 5-hour and weekly limits, plus model-scoped windows, credits and
-Console spend. Four sources are available and they are *not* equivalent — see
-below.
+**Freeze** stops it and everything under it. CPU drops to zero. Unfreeze and it
+carries on from where it stopped.
 
-**Freeze.** `SIGSTOP` the session and its whole MCP subtree. CPU drops to zero
-instantly. Thaw and it picks up exactly where it was.
+**Hibernate** ends an idle session and gives you all its memory back. One click
+brings it back later, in the same terminal tab, at the same directory, with the
+flags it was started with. You never type `--resume`.
 
-**Hibernate.** Terminate an idle session and reclaim its entire memory
-footprint — then bring it back with one click, at the right directory, with its
-original flags intact. You never type `--resume`.
-
-Killing the `claude` process leaves its parent shell alive, so the tab it was
-running in is still open and still sitting at a prompt. Torpor records the
-session's controlling tty and reopens it **in that same tab**, restoring the
-window layout you already had. This works in Terminal and iTerm, which expose a
-per-tab `tty` to AppleScript. VS Code's integrated terminal has no external
-scripting API, so those sessions get a new window instead — and Torpor says so
-rather than pretending otherwise.
-
-**Stays out of the way, if you want.** Optionally the status item removes itself
-from the menu bar when no session is running; open Torpor again to bring it back.
-Off by default, and always suppressed if the session registry stops parsing, so
-the app can never vanish on you at the moment something has gone wrong.
-
-**Six menu bar styles** — icon, percentage, progress bar, battery, icon+bar,
-compact — in adaptive, monochrome or accent colour, with an optional reset
-countdown (time remaining, clock time, or both).
-
----
+There's also your 5-hour and weekly Claude usage in the menu bar, with a white
+marker showing how far through the window you are. Fill short of the marker means
+you're inside the pace the window can carry.
 
 ## Install
-
-### Homebrew
 
 ```sh
 brew install --cask yassershkeir/torpor/torpor
 ```
 
-Then, **before you open it for the first time**, run:
+Then, **before you open it the first time**:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Torpor.app
 ```
 
-That command is explained under [Why macOS blocks Torpor](#why-macos-blocks-torpor).
-If you have already tried to open Torpor, it will fail — use the *Open Anyway*
-steps in that section instead.
+That command is explained in [Why macOS blocks it](#why-macos-blocks-it). If
+you've already tried to open Torpor it won't work, and you want the *Open Anyway*
+route in that section instead.
 
-Use the full `yassershkeir/torpor/torpor` name. Since Homebrew 6.0, third-party
-taps need explicit trust, and installing by fully-qualified name grants it to
-this one cask and nothing else.
+Or take the zip from [the latest release](https://github.com/YasserShkeir/torpor/releases/latest),
+drag it to Applications, and run the same command before opening it.
 
-### Download
-
-1. Grab `Torpor-<version>.zip` from [the latest release](https://github.com/YasserShkeir/torpor/releases/latest).
-2. Unzip it and drag **Torpor.app** into **Applications** — do this *before*
-   opening it, or you end up with a stale copy in Downloads and a confusing
-   next step.
-3. **Before opening it**, run:
-
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Torpor.app
-   ```
-
-4. Open Torpor from Applications.
-
-Optionally, verify the download came from this repo's public build workflow
-before you run it:
-
-```sh
-gh attestation verify Torpor-<version>.zip --repo YasserShkeir/torpor
-shasum -a 256 -c Torpor-<version>.zip.sha256
-```
-
-### Build from source
-
-The reassuring option, and the only one with no Gatekeeper step — software you
-compile yourself is never quarantined.
+Or build it, which skips the Gatekeeper business entirely, because software you
+compiled yourself was never quarantined:
 
 ```sh
 git clone https://github.com/YasserShkeir/torpor.git
-cd torpor
-./scripts/build-app.sh
-open dist/Torpor.app
+cd torpor && ./scripts/build-app.sh && open dist/Torpor.app
 ```
 
-Requires macOS 14+ and Swift 6.2 (Xcode 26 or newer).
+Needs macOS 14 or later, and Swift 6.2 to build.
 
----
+## Why macOS blocks it
 
-## Why macOS blocks Torpor
+Torpor is ad-hoc signed and not notarised. Notarising means an Apple Developer
+Program membership at $99 a year, which this project doesn't have yet. macOS
+marks anything downloaded from the internet as quarantined and won't open
+quarantined software Apple hasn't checked. Nothing's wrong with the download. It
+just can't tell who built it.
 
-Torpor is **ad-hoc signed, not notarised**. Notarisation needs an Apple
-Developer Program membership at $99/year, which this project does not have yet.
-macOS marks everything downloaded from the internet as quarantined and refuses
-to open quarantined software Apple has not checked. Nothing is wrong with the
-download — macOS simply cannot tell who built it.
-
-**If you have not opened it yet**, remove the marker:
+If you haven't opened it yet, drop the marker:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Torpor.app
 ```
 
-That deletes the downloaded-from-the-internet flag on that one app. It is also,
-honestly, a command you should be sceptical of when a stranger hands it to you
-— which is why "Build from source" is directly above.
+That's a command you should be a bit suspicious of when a stranger hands it to
+you, which is why building from source sits right above it.
 
-**If you already double-clicked it and got a warning**, that command now fails
-with `Operation not permitted`: macOS locks the marker once it has blocked a
-launch. Use this instead:
+If you already double-clicked and got the warning, that command now fails with
+`Operation not permitted`, because macOS locks the marker once it's blocked a
+launch. Go to **System Settings → Privacy & Security**, scroll to **Security**,
+and click **Open Anyway**. Do it soon, the entry doesn't hang around.
 
-1. **System Settings → Privacy & Security**
-2. Scroll to **Security**. There is a line mentioning Torpor.
-3. Click **Open Anyway**, enter your password, confirm.
+The first time you revive a session, macOS asks permission to control Terminal or
+iTerm. That's how it reopens the session in the tab it was already in. It asks
+again after every update, because each ad-hoc build looks like a different app to
+macOS. A Developer ID fixes that, and it's the main reason this project will
+eventually buy one.
 
-Do it soon after the block — the entry does not stay forever. If it is not
-listed, delete the app, re-download, and use `xattr` *before* opening.
+## Freezing doesn't free memory, and I shipped it saying so
 
-### First run
+I assumed it would. Seemed obvious. Then I measured eight idle sessions before
+release:
 
-Torpor asks for permission to control Terminal or iTerm the first time you
-revive a session — that is how it reopens the session in the tab it was already
-in. Because Torpor is ad-hoc signed, macOS treats each new build as a different
-app, so **it asks again after every update**. A Developer ID certificate is the
-only fix, and the main reason this project will eventually buy one.
-
----
-
-## Updating
-
-Torpor updates itself. It checks once a day, tells you when a new version
-exists, and installs it once you approve — there is a **Check for Updates…**
-button in Settings → About.
-
-Updates are verified with an EdDSA signature over the archive, checked against a
-public key baked into the app. macOS cannot vouch for Torpor, so Torpor vouches
-for its own updates.
-
-Homebrew installs update themselves too; `brew upgrade --cask torpor` also works
-and does not fight the in-app updater.
-
----
-
-## Uninstalling
-
-```sh
-# First — this restores whatever statusline you had before Torpor.
-# Nothing else can do it once the app is gone.
-/Applications/Torpor.app/Contents/MacOS/Torpor --uninstall-statusline
-
-brew uninstall --zap --cask torpor      # if installed via Homebrew
-```
-
-Manual removal:
-
-```sh
-/Applications/Torpor.app/Contents/MacOS/Torpor --uninstall-statusline
-rm -rf /Applications/Torpor.app
-rm -rf ~/Library/Application\ Support/Torpor ~/.torpor
-security delete-generic-password -s dev.torpor.Torpor 2>/dev/null
-```
-
----
-
-## Where usage data comes from
-
-Four sources, deliberately not presented as equivalent. Torpor states the
-trade-off at the point of choice rather than in a help page.
-
-| Source | What it gives you | Standing |
-|---|---|---|
-| **Claude Code statusline** (default) | 5-hour and weekly percentages, reset times | Documented. No credentials. |
-| **Console API key** | Month-to-date spend, daily cost, per-model breakdown | Anthropic's documented path for third-party tools. Requires a Console organisation — the Admin API is unavailable to individual accounts. |
-| **Connect with Claude CLI** | Plan utilisation, model-scoped limits, credits | ⚠️ Account risk — see below |
-| **Paste subscription token** | Same as above | ⚠️ Account risk — see below |
-
-The two token paths reuse the OAuth credential Claude Code stores for itself and
-call an undocumented endpoint with a `claude-code/<version>` User-Agent.
-Anthropic's Claude Code legal documentation states OAuth authentication is
-"intended exclusively for … ordinary use of Claude Code and other native
-Anthropic applications" and that third-party developers may not "route requests
-through Free, Pro, or Max plan credentials on behalf of their users." In January
-2026 Anthropic deployed anti-spoofing safeguards, and an Anthropic engineer
-confirmed publicly that user accounts were banned for triggering abuse filters
-from third-party harnesses using subscription credentials.
-
-That risk lands on **your** Anthropic account. Torpor keeps these modes inert
-until you have read the notice and explicitly enabled them, stores tokens in the
-login Keychain rather than on disk, and never sends them anywhere but
-`api.anthropic.com`. Rate limiting is treated as the normal case: 429s are
-honoured with `Retry-After`, backed off exponentially, and never retried in a
-loop, with the statusline snapshot keeping the UI populated in the meantime.
-
-The default costs you nothing and risks nothing. Use it unless you specifically
-need the model-scoped rows.
-
----
-
-## Two things this app is honest about
-
-### Freezing does not free memory. Hibernating does.
-
-Measured on an 18 GB M3 Pro running eight idle sessions:
-
-| | footprint | still resident (RSS) |
+| | footprint | still in physical RAM |
 |---|---|---|
 | 8 idle sessions | 2,797 MB | 344 MB |
 
-macOS has *already* compressed the overwhelming majority of an idle session.
-(Torpor reports footprint only. `footprint − RSS` looks like a compressed-bytes
-figure and is not one: the two counters have different accounting bases, and the
-difference measured up to 56% wrong. A true figure needs `task_info(TASK_VM_INFO)`
-and a task-port entitlement this app cannot obtain.)
-Nothing in the kernel's page-reclaim path consults task state — `vm_pageout`
-never reads process status, and the app freezer that would proactively compress
-a suspended process is compiled out on macOS. A stopped process's pages age out
-exactly like an untouched running process's do.
+macOS had already compressed and paged out the rest. Nothing in the kernel's
+reclaim path checks whether a process is stopped, so a perfect freeze gets you
+that 344 MB at best. Hibernating gives back the whole 2,797 MB, including what's
+sitting in swap.
 
-So a perfect freeze reclaims **at most the resident column** — a small fraction
-of the total — while hibernating frees the whole 2.8 GB, including everything
-sitting in swap. (The resident figure swings wildly between samples, by tens of
-megabytes on an idle session, which is the other reason Torpor does not display
-it. Footprint is stable to within a megabyte across polls.)
+So Freeze is a CPU control here, not a memory one. Useful against a session
+that's spinning, and that's what the app calls it.
 
-Torpor offers freeze as a **CPU** control — it's genuinely useful against the
-idle GC runaway that can take a long-lived session to multiple gigabytes and
-several cores — and hibernate as the memory control. It does not market freeze
-as a memory tier, because it isn't one.
+Related: Torpor reports `phys_footprint`, not RSS. RSS leaves out compressed
+pages, and one idle session measured 24 MB by RSS against 319 MB by footprint.
+Any RSS-based monitor is wrong about idle processes by roughly ten times, which
+was the whole reason for writing this.
 
-### Quota comes from the statusline, not from your credentials
+## Where the usage numbers come from
 
-Claude Code invokes your configured statusline command on every render and
-hands it a JSON payload containing, for Claude.ai subscribers:
+Four sources, and they're not equivalent.
 
-```
-rate_limits.five_hour.used_percentage    rate_limits.five_hour.resets_at
-rate_limits.seven_day.used_percentage    rate_limits.seven_day.resets_at
-```
+| Source | Gives you | Standing |
+|---|---|---|
+| **Claude Code statusline** (default) | 5-hour and weekly percentages, reset times | Documented. No credentials, no network calls. |
+| **Console API key** | Month-to-date spend, daily cost, per-model breakdown | Anthropic's documented path. Needs an org account. |
+| **Connect with Claude CLI** | Plan usage, model-scoped limits, credits | Can get your account banned |
+| **Paste subscription token** | Same as above | Can get your account banned |
 
-These are the same server-computed numbers `/usage` renders. Torpor installs a
-small shim that tees that payload to a snapshot file and then delegates to
-whatever statusline you already had, so installing it never costs you your
-prompt. Inspect it before installing:
+The default reads a payload Claude Code already hands your statusline. Torpor
+installs a small script that saves those numbers and then runs whatever
+statusline you had, so your prompt looks the same as before.
+
+The two token options reuse the OAuth credential Claude Code keeps for itself and
+call an endpoint Anthropic doesn't document, sending a `claude-code/<version>`
+User-Agent copied from your installed CLI. In January 2026 Anthropic deployed
+anti-spoofing safeguards and banned accounts for that traffic. Torpor can do it,
+because some people want the model-scoped rows badly enough, but it stays inert
+until you pick it and tick a box saying what the risk is. That risk lands on your
+account, not mine.
+
+## Updating
+
+Torpor updates itself. Checks once a day, tells you, installs when you say so.
+There's a button in Settings if you'd rather not wait.
+
+Updates carry a signature checked against a key built into the app. macOS can't
+vouch for Torpor, so Torpor vouches for its own updates.
+
+## Uninstalling
+
+Run this first. It puts back whatever statusline you had before, and nothing else
+can once the app is gone.
 
 ```sh
-Torpor --emit-shim /tmp/shim.sh && cat /tmp/shim.sh
-Torpor --install-statusline     # backs up settings.json first
+/Applications/Torpor.app/Contents/MacOS/Torpor --uninstall-statusline
+brew uninstall --zap --cask torpor
 ```
 
-**On the default setting, Torpor never reads a token and makes no network
-requests at all.** It does check whether a Claude Code Keychain item *exists*
-(an attribute query that returns no secret and raises no consent prompt) so the
-Account tab can tell you whether connecting is even possible. The two token
-modes do read the Keychain and do call `api.anthropic.com/api/oauth/usage` — that
-is what they are — but they stay completely inert until you select one, read the
-warning, and tick the acknowledgement.
+## Notes for anyone reading the code
 
-The technique doing the rounds is to pull the OAuth token out of the
-`Claude Code-credentials` Keychain item and call that undocumented endpoint with
-a spoofed `claude-code/<version>` User-Agent, by default and without asking.
-Anthropic's Claude Code legal documentation states that OAuth authentication is
-"intended exclusively for … ordinary use of Claude Code and other native
-Anthropic applications" and that third-party developers may not "route requests
-through Free, Pro, or Max plan credentials on behalf of their users." In
-January 2026 Anthropic deployed anti-spoofing safeguards, and an Anthropic
-engineer confirmed publicly that user accounts were banned for triggering abuse
-filters from third-party harnesses using subscription credentials.
+Things that cost me time, in case they save you some.
 
-That risk lands on *your* account, not the tool author's. Torpor takes the
-documented path instead.
+**Don't find sessions by process name.** The executable's filename is the Claude
+Code version string, so `pgrep -x claude` matched one of my twelve sessions.
+`~/.claude/sessions/<pid>.json` is the only reliable list, and every field in it
+gets read as optional, because none of it is documented.
 
-**The trade-off, stated plainly:** the snapshot only refreshes while some
-session is rendering its statusline. If everything is idle, the numbers age —
-so the UI always shows the capture time and marks it stale after 15 minutes.
-`rate_limits` is also absent until a session's first API response.
-
----
-
-## Implementation notes
-
-Things that are non-obvious and cost time to discover:
-
-**Discover sessions from the registry, never by process name.** The Claude Code
-executable's basename is the *version string* — `2.1.220`, not `claude`. On a
-machine with 12 sessions, `pgrep -x claude` matched exactly one (the VS Code
-extension's binary, which lives at a different path). `~/.claude/sessions/<pid>.json`
-is the only reliable enumeration source.
-
-**Measure `phys_footprint`, not RSS.** RSS excludes compressed pages. One idle
-session measured 24 MB RSS against 319 MB footprint — a 13x understatement.
-Every RSS-based monitor is wrong about idle sessions by roughly an order of
-magnitude.
-
-**Cross-check the registry against live process state.** `status` is stamped on
-transition, not as a heartbeat, so a session that crashes while `busy` leaves a
-permanently stale `busy` file. Torpor treats a dead PID as gone regardless of
-what the file says, and guards against PID reuse via start time.
-
-**`updatedAt` is a real idle clock.** It records when status last *changed*, so
-for an idle session it genuinely means "went idle at" — verified on a session
-where it was written 43.6 hours after `startedAt`. It is not a heartbeat and
-never refreshes while status is unchanged.
-
-**`status` is absent entirely on the VS Code entrypoint.** Those sessions show
-as `unknown` and are never auto-hibernated, because we can't tell whether
-they're mid-task.
-
-**`claude --resume` is lossy.** It restores conversation history but drops
+**`claude --resume` is lossy.** It restores the conversation but drops
 `--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir` and `--model`. Torpor
-captures argv *before* terminating and replays those flags on revive — which
-makes its resume more faithful than typing the command yourself. Flags are an
-allowlist, not a passthrough: stream plumbing (`--output-format stream-json`,
-`--input-format`, `--replay-user-messages`) must not be replayed or you get a
-session reading JSON from the keyboard. Sessions hosted by VS Code or the
-desktop app revive with the plain `claude` on PATH for the same reason.
+reads the process's argv before killing it and replays those, which makes its
+resume more faithful than typing the command yourself. The replay list is an
+allowlist rather than a passthrough. Feed back `--output-format stream-json` and
+you get a session reading JSON from the keyboard.
 
-**Deduplicate transcript usage on `(message.id, requestId)`, keeping the largest
-snapshot.** Streaming rewrites a message repeatedly with growing counts; summing
-rows double-counts. Also skip `subagents/*.jsonl` — on this machine 3,329 of
-3,490 transcript files are subagent transcripts already reflected in the parent.
+**Transcript token counts need three rules.** Dedupe on `(message.id, requestId)`
+keeping the largest snapshot, because streaming rewrites a message repeatedly with
+growing counts. Skip `subagents/*.jsonl`, which on my machine was 3,329 of 3,490
+files. Classify by each record's own `message.model`.
 
-**`stats-cache.json` is not a usage source.** Its `costUSD` field is `0` for
-every model (subscription users aren't billed per token), `dailyModelTokens` is
-empty, and it only recomputes periodically.
+**Reviving into the original tab works** because killing `claude` leaves its
+parent shell alive, so the tab is still sitting at a prompt. Torpor records the
+controlling tty and matches it against open Terminal and iTerm tabs. VS Code's
+built-in terminal has no scripting API, so those sessions get a new window.
 
----
+There's a CLI too, which is how most of this got debugged:
 
-## Stability
+```
+Torpor --list          sessions with memory
+Torpor --groups        grouped by folder
+Torpor --preview <pid> what hibernate would capture, no side effects
+Torpor --render-live   render the exact menu bar item, magnified
+```
 
-This depends on undocumented Claude Code internals — the session registry shape
-and the transcript schema. Claude Code ships roughly six releases a week, and
-three different versions were running concurrently on the development machine.
-Torpor decodes every registry field as optional, falls back to the filename for
-the pid and to the live process for the working directory, and — if registry
-files exist but none of them parse — refuses to auto-hide from the menu bar, so
-an upstream format change can never make the app silently disappear. Expect
-breakage anyway, and file issues.
+## Contributing
 
-The statusline `rate_limits` contract is documented and is the stable part.
+Bug reports are the useful thing. Torpor reads Claude Code internals that aren't
+documented and Claude Code ships around six releases a week, so it will break and
+I often won't have noticed. Include `Torpor --list`, `Torpor --status` and your
+Claude Code version. More in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Contributing and feedback
+One hard rule for pull requests: no code path reads a subscription token or
+contacts that endpoint without an explicit opt-in from the user.
 
-Bug reports are genuinely valuable here. Torpor reads undocumented Claude Code
-internals and upstream ships roughly six releases a week, so breakage is a
-question of when, not whether. If the session list empties out or the numbers
-look wrong after a Claude Code update, that is worth an issue.
-
-- **[Open an issue](https://github.com/YasserShkeir/torpor/issues/new/choose)** —
-  bugs, especially anything that broke after a Claude Code release. Include the
-  output of `Torpor --list` and `Torpor --status`.
-- **[Start a discussion](https://github.com/YasserShkeir/torpor/discussions)** —
-  ideas, questions, or "does this work on your machine too?"
-- **[Star the repo](https://github.com/YasserShkeir/torpor/stargazers)** if it
-  saved you some RAM.
-
-Pull requests welcome. The one hard rule: **no code path may read a subscription
-OAuth token without an explicit, informed opt-in from the user.** See
-[Where usage data comes from](#where-usage-data-comes-from).
-
-## Deliberately absent
-
-**Crash reporting and analytics.** Torpor parses `~/.claude/projects/**/*.jsonl`,
-which are full conversation transcripts — source code, file paths, and whatever
-you have pasted into a prompt. Any third-party crash reporter would sweep that
-into breadcrumbs. Nothing in this app phones home, and adding something that
-does would need a much better reason than convenience.
+No telemetry, no analytics, no crash reporting, and there won't be any. Torpor
+parses your conversation transcripts to count tokens, and those hold source code
+and whatever you've pasted into a prompt. A crash reporter would sweep that into
+breadcrumbs.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ---
 
 <p align="center">
-  Built by <strong>Yasser Shkeir</strong> — fullstack engineer &amp; business consultant.<br>
-  <em>Systems that move the numbers.</em>
-</p>
-
-<p align="center">
+  Built by <strong>Yasser Shkeir</strong><br>
   <a href="https://yasser-shkeir.com">yasser-shkeir.com</a> ·
   <a href="https://github.com/YasserShkeir">GitHub</a> ·
   <a href="https://www.linkedin.com/in/yasser-shkeir">LinkedIn</a>
-</p>
-
-<p align="center">
-  <sub>Also: <a href="https://github.com/YasserShkeir/django-smart-ratelimit">django-smart-ratelimit</a> ·
-  <a href="https://github.com/YasserShkeir/django-safe-migrations">django-safe-migrations</a></sub>
 </p>
 
 <p align="center">
