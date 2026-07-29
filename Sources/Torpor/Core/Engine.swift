@@ -921,10 +921,11 @@ final class Engine: ObservableObject {
             return 1 - (remaining / length)
         }
 
-        // Strictly this bar's own window. The notch is drawn through the fill,
-        // so borrowing another window's clock would put two unrelated
-        // quantities in one 34pt gauge and read as pace information about a bar
-        // that has no pace.
+        // Strictly this bar's own window. The white line is drawn across the
+        // fill, and the duration under it counts the same window down, so
+        // borrowing another window's clock would put two unrelated quantities
+        // in one column and read as pace information about a bar that has no
+        // pace.
         let elapsed = elapsedFraction(resets: resets, length: windowLength)
 
         return .init(style: preferences.menuBarStyle,

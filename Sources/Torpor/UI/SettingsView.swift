@@ -455,7 +455,7 @@ struct AppearanceTab: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Live preview").font(.caption).foregroundStyle(.secondary)
                 MenuBarPreview(engine: engine)
-                Text("The bar is your \(engine.preferences.menuBarMetric.label.lowercased()); the figure beside it is \(engine.preferences.memoryFigure.label.lowercased()). Every combination below draws that same layout.")
+                Text("Two columns. The first is your \(engine.preferences.menuBarMetric.label.lowercased()) — the bar, with how long is left underneath it. The second is \(engine.preferences.memoryFigure.label.lowercased()). Every combination below draws that same layout.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -476,7 +476,7 @@ struct AppearanceTab: View {
                         }
                         Text(engine.preferences.menuBarStyle == .bar
                              ? "The bar carries the level, so the exact percentage is in the tooltip — hover the icon to read it."
-                             : "No bar: the percentage is shown as a number, then the memory figure.")
+                             : "No bar: the first column is the percentage with the time remaining under it, and the memory figure sits beside both.")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -511,15 +511,17 @@ struct AppearanceTab: View {
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Picker("Reset countdown", selection: $engine.preferences.timeMarker) {
+                        // Named for the slot rather than for the bar, because
+                        // the Percentage style has no bar for it to be under.
+                        Picker("Second row", selection: $engine.preferences.timeMarker) {
                             ForEach(TimeMarker.allCases) { Text($0.label).tag($0) }
                         }
                         .pickerStyle(.segmented)
-                        Text("A percentage on its own does not tell you whether to slow down. The countdown does. It appends after the memory figure; reset times later this week carry their weekday, anything further out carries the date.")
+                        Text("A percentage on its own does not tell you whether to slow down; how long is left does. It sits under the bar as a duration — \"1h 33m\" — because that is the question, and because Claude's own usage screen phrases it the same way. Switching it off gives the item back a single, taller row.")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if engine.preferences.menuBarStyle == .bar {
-                            Text("The notch across the bar is the same clock. Fill short of it means you are inside the pace your window can carry; fill past it means you are burning faster than the clock.")
+                            Text("The white line across the bar is the same clock. Fill short of it means you are inside the pace your window can carry; fill past it means you are burning faster than the clock.")
                                 .font(.caption2).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -618,22 +620,24 @@ struct StylePreview: View {
             engine.preferences.menuBarStyle = style
         } label: {
             HStack(spacing: 8) {
-                // Stand-in numbers, but the real layout: bar then memory
-                // figure, in the colours the user's current choices produce.
-                // A card that showed only the gauge could not show what these
-                // two styles actually differ by.
+                // Stand-in numbers, but the real layout: bar over the time
+                // remaining, then the memory figure, in the colours the user's
+                // current choices produce. A card that showed only the gauge
+                // could not show what these two styles actually differ by —
+                // and one that hard-coded `marker: .none` could not show the
+                // second row at all, which is now half of the layout.
                 MenuBarSample(input: MenuBarRenderer.Input(
                     style: style,
                     colorMode: engine.preferences.colorMode,
-                    marker: .none,
+                    marker: engine.preferences.timeMarker,
                     fraction: 0.68, percentText: "68%",
                     memoryText: "1.24 GB",
                     memoryColor: MenuBarRenderer.memoryTint(
                         for: engine.preferences.memoryFigure,
                         mode: engine.preferences.colorMode),
-                    resetsAt: nil,
+                    resetsAt: Date().addingTimeInterval(5_580),
                     sessionCount: 3, isStale: false, windowElapsed: 0.45))
-                    .frame(height: 22)
+                    .frame(height: MenuBarRenderer.compositeHeight)
                 Text(style.label).font(.caption)
                 Spacer()
                 if isSelected {
@@ -659,7 +663,8 @@ struct MenuBarPreview: View {
 
     var body: some View {
         HStack {
-            MenuBarSample(input: engine.menuBarInput).frame(height: 22)
+            MenuBarSample(input: engine.menuBarInput)
+                .frame(height: MenuBarRenderer.compositeHeight)
             Spacer()
             // Two halves, two reasons to be empty, so say which one is.
             if engine.menuBarInput.fraction == nil {

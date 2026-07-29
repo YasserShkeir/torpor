@@ -14,28 +14,35 @@ enum PreviewRenderer {
         let styles = MenuBarStyle.allCases
         let modes = ColorMode.allCases
         // The states that break the drawing, not just the one that works: fill
-        // past the notch is where a marker drawn in colour vanished under
-        // template rendering, and no-reading is where an empty bar used to be
+        // past the white line is where a marker that blended with the fill used
+        // to vanish, and no-reading is where an empty bar used to be
         // indistinguishable from 0%.
         //
         // The memory figure alternates between the two figures rather than
         // doubling the row count: what has to be visible is that green and
         // orange both survive every style and every colour mode, and that the
         // figure does *not* dim alongside a stale quota reading.
+        //
+        // The last row switches the second row off, because that is the other
+        // shape the item has — one taller, centred row — and it is the only
+        // thing the `timeMarker` preference still decides.
         let readings: [(label: String, fraction: Double?, percent: String?,
-                        elapsed: Double?, stale: Bool,
+                        elapsed: Double?, stale: Bool, marker: TimeMarker,
                         figure: MemoryFigure, memory: String)] = [
-            ("past the notch", 0.87, "87%", 0.55, false, .total, "1.24 GB"),
-            ("behind it", 0.30, "30%", 0.55, false, .reclaimable, "412 MB"),
-            ("stale", 0.87, "87%", 0.55, true, .total, "1.24 GB"),
-            ("no reading", nil, nil, nil, false, .reclaimable, "412 MB"),
+            ("past the line", 0.87, "87%", 0.55, false, .remaining, .total, "1.24 GB"),
+            ("behind it", 0.30, "30%", 0.55, false, .remaining, .reclaimable, "412 MB"),
+            ("stale", 0.87, "87%", 0.55, true, .remaining, .total, "1.24 GB"),
+            ("no reading", nil, nil, nil, false, .remaining, .reclaimable, "412 MB"),
+            ("duration off", 0.87, "87%", 0.55, false, .none, .total, "1.24 GB"),
         ]
         let rows = styles.flatMap { style in readings.map { reading in (style, reading) } }
-        let rowHeight: CGFloat = 34
+        // Room for the whole composited item plus a little air, so a clipped
+        // second row would show up here as a clipped second row.
+        let rowHeight = MenuBarRenderer.compositeHeight + 12
         let labelWidth: CGFloat = 230
-        // Wide enough for the longest item the redesign can produce: bar,
-        // memory figure and countdown. At 150 the columns overlapped.
-        let columnWidth: CGFloat = 210
+        // Wide enough for the widest item the layout can produce: a 34pt column
+        // and the memory figure beside it.
+        let columnWidth: CGFloat = 130
         let headerHeight: CGFloat = 26
         let width = labelWidth + columnWidth * CGFloat(modes.count)
         let height = headerHeight + rowHeight * CGFloat(rows.count)
@@ -68,7 +75,7 @@ enum PreviewRenderer {
                 for (column, mode) in modes.enumerated() {
                     let x = labelWidth + columnWidth * CGFloat(column)
                     let input = MenuBarRenderer.Input(
-                        style: style, colorMode: mode, marker: .remaining,
+                        style: style, colorMode: mode, marker: reading.marker,
                         fraction: reading.fraction, percentText: reading.percent,
                         memoryText: reading.memory,
                         memoryColor: MenuBarRenderer.memoryTint(for: reading.figure, mode: mode),
@@ -117,8 +124,8 @@ enum PreviewRenderer {
     ///
     /// `tiffRepresentation` of a block-based NSImage renders the handler once
     /// at 1x, which is the one scale that cannot answer the question the sheet
-    /// exists to answer — whether a 2pt notch and a 1.5pt dash survive on the
-    /// display anyone actually has.
+    /// exists to answer — whether a 2pt white line and a 9pt duration survive
+    /// on the display anyone actually has.
     private static func write(_ image: NSImage, to url: URL, scale: CGFloat = 2) throws {
         let size = image.size
         guard let rep = NSBitmapImageRep(

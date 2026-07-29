@@ -87,26 +87,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.isVisible = !mayHide || !idle || revealedWhileIdle
         if !idle { revealedWhileIdle = false }
 
-        button.image = MenuBarRenderer.image(input)   // nil for text-only styles
+        // The first column — bar (or level) above the time remaining — is the
+        // image; the memory figure is the title, which the button centres
+        // against the whole image. That is the two-column layout: nothing else
+        // is needed, because a status item button lays out exactly one image
+        // and one title. Both styles now draw an image, so there is no longer a
+        // case where the item can come out zero-width: the Percentage style
+        // draws "—" rather than nothing when there is no reading.
+        button.image = MenuBarRenderer.image(input)
         button.imagePosition = .imageLeading
-        // The runs carry their own colours, because the level and the memory
-        // figure are different quantities in different colours. Monochrome
-        // deliberately sets none: NSStatusBarButton tints its own title and
-        // inverts it while the item is highlighted, and an explicit labelColor
-        // defeated both, leaving the number dark on the highlighted background
-        // with the popover open. The colour modes pay that price knowingly —
-        // the colour is the whole point of them — and so does a reading we
-        // cannot vouch for, which must look dimmed in every mode.
-        var title = MenuBarRenderer.attributedTitle(input)
-        // Percentage style draws no image, and the title is empty until there
-        // is either usage data or a session — which together produced a status
-        // item of zero width, indistinguishable from the app having failed to
-        // launch. Left uncoloured so the menu bar can still invert it.
-        if button.image == nil, title.length == 0 {
-            title = NSAttributedString(string: " —",
-                                       attributes: [.font: MenuBarRenderer.titleFont])
-        }
-        button.attributedTitle = title
+        // The run carries its own colour, because the memory figure is a
+        // different quantity from the level and says so in green or orange.
+        // Monochrome deliberately sets none: NSStatusBarButton tints its own
+        // title and inverts it while the item is highlighted, and an explicit
+        // labelColor defeated both, leaving the number dark on the highlighted
+        // background with the popover open. The colour modes pay that price
+        // knowingly — the colour is the whole point of them.
+        button.attributedTitle = MenuBarRenderer.attributedTitle(input)
 
         let count = engine.sessions.count
         var tooltip = count == 0
@@ -119,12 +116,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             tooltip += "\n\(engine.preferences.menuBarMetric.label): \(percent) used"
         }
         // Name what the gauge is a proportion of — a bar with no label is
-        // otherwise just a rectangle — what the notch across it means, and what
-        // the number beside it is, since those are two unrelated quantities in
-        // one item and only the colour distinguishes them on screen.
+        // otherwise just a rectangle — what the white line across it means, and
+        // what the number beside it is, since those are two unrelated
+        // quantities in one item and only the colour distinguishes them.
         tooltip += "\n" + engine.preferences.menuBarMetric.gaugeMeaning
         if input.showsTimeMarker {
             tooltip += "\n" + engine.preferences.menuBarMetric.markerMeaning
+        }
+        // The second row is a duration and nothing says what it counts down to,
+        // so the tooltip has to.
+        if let remaining = MenuBarRenderer.durationText(input) {
+            tooltip += "\nThe figure under the bar is how long is left: this window resets in \(remaining)."
         }
         if input.memoryText != nil {
             tooltip += "\n" + engine.preferences.memoryFigure.meaning

@@ -353,6 +353,10 @@ struct Preferences: Codable {
     var menuBarMetric: MenuBarMetric = .fiveHour
     /// Which memory figure sits beside that bar.
     var memoryFigure: MemoryFigure = .total
+    /// Whether the status item carries a second row saying how long is left.
+    /// It no longer chooses the *format* of that row — see `TimeMarker`, which
+    /// still decodes the two formats it used to offer and draws both as a
+    /// duration.
     var timeMarker: TimeMarker = .remaining
     /// Model-scoped usage rows hidden from the popover, by server-supplied
     /// name (e.g. "Sonnet"). Empty means show everything the server reports —
@@ -374,7 +378,7 @@ struct Preferences: Codable {
     /// mean "the defaults", never a half-filled struct.
     init() {}
 
-    /// Clamped to the ranges the steppers enforce. The doc comment above
+    /// Clamped to what the controls can actually express. The doc comment above
     /// advertises tolerance of a hand-edited file, and an out-of-range Double
     /// reaches `UInt64(...)` in Engine and traps on the first poll — crashing
     /// before any UI exists to fix it with.
@@ -384,6 +388,12 @@ struct Preferences: Codable {
             return min(max(v, lower), upper)
         }
         var p = self
+        // `TimeMarker` still decodes the two values it retired, so the setting
+        // survives the rename — but they are not in `allCases`, and a segmented
+        // picker whose selection matches no segment shows nothing selected.
+        // Collapsing them here finishes the migration on load rather than
+        // waiting for the user to touch a control that looks broken.
+        p.timeMarker = p.timeMarker.showsDuration ? .remaining : .none
         p.pollSeconds = clamp(p.pollSeconds, 5, 2, 60)
         p.notifyIdleMinutes = clamp(p.notifyIdleMinutes, 30, 5, 480)
         p.notifyIdleFootprintMB = clamp(p.notifyIdleFootprintMB, 250, 50, 4000)
