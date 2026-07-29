@@ -53,7 +53,19 @@ cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
 # app builds, signs and verifies cleanly and then dies at launch with
 # "Library missing" — which looks like a Gatekeeper problem and is not one.
 # Must run before signing: it rewrites the Mach-O and invalidates any signature.
-if ! otool -l "$APP/Contents/MacOS/Torpor" | grep -q '@executable_path/../Frameworks'; then
+# `otool … | grep -q` is a trap under `set -o pipefail`: grep exits at the first
+# match and closes the pipe, otool then fails its write and exits 1, and pipefail
+# promotes that to the pipeline's status. A *present* rpath reads as absent, and
+# whether it happens at all depends on how fast otool fills the pipe — so it
+# passes on one build and fails the next. Capture the dump instead of piping it.
+has_framework_rpath() {
+    case "$(otool -l "$APP/Contents/MacOS/Torpor")" in
+        *"@executable_path/../Frameworks"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if ! has_framework_rpath; then
     install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Torpor"
 fi
 
@@ -74,7 +86,7 @@ codesign "${SIGN_ARGS[@]}" "$APP"
 codesign --verify --deep --strict "$APP" && echo "    signature verifies"
 [ -n "${IDENTITY:-}" ] && echo "    signed with: $IDENTITY" || echo "    ad-hoc signed"
 lipo -archs "$APP/Contents/MacOS/Torpor" | sed 's/^/    architectures: /'
-otool -l "$APP/Contents/MacOS/Torpor" | grep -q '@executable_path/../Frameworks' \
+has_framework_rpath \
     && echo "    framework rpath present" || { echo "    MISSING framework rpath" >&2; exit 1; }
 
 echo

@@ -131,6 +131,8 @@ final class Engine: ObservableObject {
 
     private let store = HibernationStore()
     private let scanner = TranscriptScanner()
+    /// In-flight token scan, cancelled when a newer refresh supersedes it.
+    private var scanTask: Task<Void, Never>?
     private let notifier = Notifier()
     private let api = UsageAPI()
 
@@ -169,45 +171,6 @@ final class Engine: ObservableObject {
             .filter { !preferences.hiddenUsageRows.contains($0.key) }
             .sorted { $0.key < $1.key }
             .map { (name: $0.key, window: $0.value) }
-    }
-
-    /// Tokens by model across open sessions, largest first.
-    ///
-    /// This is not a quota figure and must never be drawn as one. Anthropic
-    /// publishes no conversion between tokens and plan-limit consumption, and
-    /// the statusline payload carries no model-scoped limits, so a real Fable
-    /// or Opus gauge is only possible on the token source. What this gives you
-    /// is the split of what you have actually spent, read from your own
-    /// transcripts.
-    var modelSplit: [(model: String, tokens: Int, share: Double)] {
-        Self.split(byModel: weekTokens.byModel)
-    }
-
-    /// Pure, so a listing command can compute it without constructing an Engine.
-    nonisolated static func split(byModel totals: [String: Int])
-        -> [(model: String, tokens: Int, share: Double)] {
-        let sum = totals.values.reduce(0, +)
-        guard sum > 0 else { return [] }
-        return totals
-            .filter { $0.value > 0 }
-            .sorted { $0.value > $1.value }
-            .map { (model: friendlyModelName($0.key),
-                    tokens: $0.value,
-                    share: Double($0.value) / Double(sum)) }
-    }
-
-    /// `claude-fable-5` reads as "Fable 5", `claude-opus-4-5-20251101` as
-    /// "Opus 4.5". The raw ids are an implementation detail of the transcript.
-    nonisolated static func friendlyModelName(_ id: String) -> String {
-        var name = id
-        for prefix in ["claude-"] where name.hasPrefix(prefix) {
-            name = String(name.dropFirst(prefix.count))
-        }
-        // Drop a trailing yyyymmdd build stamp.
-        let parts = name.split(separator: "-").filter { !($0.count == 8 && Int($0) != nil) }
-        guard let family = parts.first else { return id }
-        let rest = parts.dropFirst().joined(separator: ".")
-        return (family.capitalized + " " + rest).trimmingCharacters(in: .whitespaces)
     }
 
     var weekTokens: TokenTotals {
@@ -369,20 +332,41 @@ final class Engine: ObservableObject {
 
         if sideEffects, preferences.liveFetchPermitted { Task { await fetchLive() } }
 
-        // Transcript scanning is incremental, so this stays cheap even against
-        // a 1.3 GB corpus: only bytes appended since the last pass are parsed.
-        for session in loaded {
-            tokens[session.sessionId] = scanner.totals(cwd: session.cwd,
-                                                       sessionId: session.sessionId)
-        }
         // Drop state for sessions that have ended, so neither the scanner's
         // caches nor the "tokens across open sessions" total grow forever.
         tokens = tokens.filter { live.contains($0.key) }
-        scanner.prune(keeping: live)
+        rescanTokens(sessions: loaded, live: live)
 
         guard sideEffects else { return }
         evaluateNotifications()
         if preferences.autoHibernateEnabled { runAutoHibernate() }
+    }
+
+    /// Token totals, computed off the main actor and published when they land.
+    ///
+    /// This used to run inline in `refresh()`, which `AppDelegate` calls before
+    /// presenting the popover — so opening the menu bar item waited on a
+    /// filesystem pass over every open session's transcript tree. Warm that is
+    /// a few hundred file opens; cold it is the whole corpus. The numbers now
+    /// arrive a moment after the popover does, which is the right trade: they
+    /// are a spend readout, not something you act on in the first frame.
+    ///
+    /// Superseding scans cancel their predecessor, so holding the popover open
+    /// through several poll ticks cannot pile up overlapping passes.
+    private func rescanTokens(sessions: [Session], live: Set<String>) {
+        scanTask?.cancel()
+        let scanner = self.scanner
+        scanTask = Task { [weak self] in
+            var fresh: [String: TokenTotals] = [:]
+            for session in sessions {
+                if Task.isCancelled { return }
+                fresh[session.sessionId] = await scanner.totals(
+                    cwd: session.cwd, sessionId: session.sessionId)
+            }
+            await scanner.prune(keeping: live)
+            guard !Task.isCancelled else { return }
+            self?.tokens = fresh
+        }
     }
 
     // MARK: - Actions

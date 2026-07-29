@@ -22,7 +22,7 @@ enum CLI {
     USAGE
       Torpor                          Launch the menu bar app
       Torpor --list                   List running sessions with memory
-      Torpor --groups                 List sessions grouped by project folder\n      Torpor --models                 Token split by model (spend, not quota)
+      Torpor --groups                 List sessions grouped by project folder
       Torpor --hibernated             List hibernated sessions
       Torpor --freeze <pid>           SIGSTOP a session and its MCP subtree
       Torpor --thaw <pid>             SIGCONT it again
@@ -70,28 +70,6 @@ enum CLI {
                 total += s.totalFootprint
             }
             print("\n\(sessions.count) sessions, \(Fmt.bytes(total)) total footprint")
-
-        case "--models":
-            // Tokens by model across open sessions. Spend, not quota — there is
-            // no published conversion from tokens to plan-limit consumption.
-            // No Engine: constructing one starts a poll timer, reconciles the
-            // login item, can make a network call, and — with auto-hibernate on
-            // — terminates processes. A listing command must not do any of that.
-            let scanner = TranscriptScanner()
-            var byModel: [String: Int] = [:]
-            for session in SessionRegistry.load() {
-                let totals = scanner.totals(cwd: session.cwd, sessionId: session.sessionId)
-                byModel.merge(totals.byModel, uniquingKeysWith: +)
-            }
-            let split = Engine.split(byModel: byModel)
-            if split.isEmpty { print("No token data in open sessions."); break }
-            let total = split.reduce(0) { $0 + $1.tokens }
-            for row in split {
-                print(pad(row.model, 22)
-                      + pad(String(format: "%5.1f%%", row.share * 100), 8, right: true)
-                      + pad(Fmt.tokens(row.tokens), 10, right: true))
-            }
-            print("\n\(Fmt.tokens(total)) tokens across open sessions")
 
         case "--groups":
             // Deliberately does NOT construct an Engine: Engine.init starts a

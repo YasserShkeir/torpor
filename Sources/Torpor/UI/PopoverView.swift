@@ -162,34 +162,6 @@ struct PopoverView: View {
                     .font(.system(size: 9)).foregroundStyle(.secondary)
             }
 
-            let split = engine.modelSplit
-            if split.count > 1 {
-                Divider().padding(.vertical, 1)
-                HStack(spacing: 5) {
-                    SectionHeader("By model")
-                    Spacer()
-                    Text("share of tokens, not of your limit")
-                        .font(.system(size: 9)).foregroundStyle(.tertiary)
-                }
-                ForEach(split.prefix(5), id: \.model) { row in
-                    HStack(spacing: 7) {
-                        Text(row.model)
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                            .frame(width: 82, alignment: .leading).lineLimit(1)
-                        // No pace marker: this is spend, not a window, so there
-                        // is no clock to compare it against.
-                        InlineBar(fraction: row.share, elapsed: nil, tint: .accentColor)
-                            .frame(height: 5)
-                        Text("\(Int((row.share * 100).rounded()))%")
-                            .font(.system(size: 10, design: .rounded)).monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 30, alignment: .trailing)
-                        Text(Fmt.tokens(row.tokens))
-                            .font(.system(size: 9)).foregroundStyle(.tertiary).monospacedDigit()
-                            .frame(width: 38, alignment: .trailing)
-                    }
-                }
-            }
         }
     }
 

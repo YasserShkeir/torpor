@@ -121,10 +121,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            engine.refresh()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
             watchForOutsideClicks()
+            // Present first, then refresh. Refreshing before showing meant the
+            // popover could not appear until a full pass over the session
+            // registry and every live process had finished.
+            engine.refresh()
         }
     }
 

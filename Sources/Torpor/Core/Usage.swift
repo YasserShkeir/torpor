@@ -148,7 +148,12 @@ struct TokenTotals: Equatable {
 ///   every other session's subagents as well.
 /// * **Classify by each record's own `message.model`.** A session can be served
 ///   by a different model than the one the UI displays.
-final class TranscriptScanner {
+/// An actor, not a class, so the parse runs off the main thread. The scan is
+/// incremental once warm, but the first pass after launch reads every open
+/// session's transcript from byte zero — including its `subagents/` tree, which
+/// on the development machine was 407 files and 159 MB. That is not work the UI
+/// can be made to wait on.
+actor TranscriptScanner {
 
     /// What one deduplicated message contributed, so a later, larger snapshot
     /// of the same message can replace it rather than add to it.
