@@ -34,6 +34,13 @@ jobs:
         # recompile, so a log grep passed unconditionally on every cache hit.
         run: swift build -Xswiftc -warnings-as-errors
 
+      - name: Test
+        # Same flags as the build above, so the test sources go through the
+        # warning gate too and the compile is reused rather than redone. Placed
+        # before the bundle step so a logic regression is reported without
+        # waiting on the universal-binary link.
+        run: swift test -Xswiftc -warnings-as-errors
+
       - name: Build the app bundle
         run: ./scripts/build-app.sh
 
