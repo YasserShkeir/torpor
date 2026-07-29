@@ -22,7 +22,7 @@ enum CLI {
     USAGE
       Torpor                          Launch the menu bar app
       Torpor --list                   List running sessions with memory
-      Torpor --groups                 List sessions grouped by project folder
+      Torpor --groups                 List sessions grouped by project folder\n      Torpor --models                 Token split by model (spend, not quota)
       Torpor --hibernated             List hibernated sessions
       Torpor --freeze <pid>           SIGSTOP a session and its MCP subtree
       Torpor --thaw <pid>             SIGCONT it again
@@ -70,6 +70,20 @@ enum CLI {
                 total += s.totalFootprint
             }
             print("\n\(sessions.count) sessions, \(Fmt.bytes(total)) total footprint")
+
+        case "--models":
+            // Tokens by model across open sessions. Spend, not quota — there is
+            // no published conversion from tokens to plan-limit consumption.
+            let engine = MainActor.assumeIsolated { Engine() }
+            let split = MainActor.assumeIsolated { engine.modelSplit }
+            if split.isEmpty { print("No token data in open sessions."); break }
+            let total = split.reduce(0) { $0 + $1.tokens }
+            for row in split {
+                print(pad(row.model, 22)
+                      + pad(String(format: "%5.1f%%", row.share * 100), 8, right: true)
+                      + pad(Fmt.tokens(row.tokens), 10, right: true))
+            }
+            print("\n\(Fmt.tokens(total)) tokens across open sessions")
 
         case "--groups":
             // Deliberately does NOT construct an Engine: Engine.init starts a
