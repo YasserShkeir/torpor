@@ -22,6 +22,20 @@ let package = Package(
             dependencies: [.product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/Torpor",
             swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // Tests depend on the executable target directly. SwiftPM links its
+        // objects into the test bundle, so no TorporCore library split is
+        // needed — and no `public` on the several hundred symbols the UI reads,
+        // which is what that split would actually have cost.
+        //
+        // `.swiftLanguageMode(.v5)` matches the target under test: v6 mode
+        // rejects `@testable` use of the non-Sendable values these tests pass
+        // across isolation boundaries.
+        .testTarget(
+            name: "TorporCoreTests",
+            dependencies: ["Torpor"],
+            path: "Tests/TorporCoreTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
         )
     ]
 )

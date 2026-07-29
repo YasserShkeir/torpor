@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var engine: Engine
+    @ObservedObject private var log = MessageLog.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,22 +24,17 @@ struct SettingsView: View {
             // Connect, Save token, Save key, launch-at-login — routed its error
             // into `lastError`, which only the popover rendered. And opening
             // Settings closes the popover, so those messages were unreachable
-            // by construction.
-            if let error = engine.lastError {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20).padding(.bottom, 10)
-            } else if let notice = engine.lastNotice {
-                Label(notice, systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20).padding(.bottom, 10)
+            // by construction. It stays below the TabView because that is the
+            // only place every tab can reach; each entry carries its own age so
+            // an error raised on Account does not read as a comment on
+            // whatever tab the user wandered to since.
+            if !log.messages.isEmpty {
+                Divider()
+                MessageStrip(log: log, horizontalPadding: 20, showsDismissAll: true)
             }
         }
         .frame(width: 620, height: 520)
+        .logsEngineMessages(engine)
     }
 }
 
@@ -50,17 +46,25 @@ struct AccountTab: View {
     @State private var consoleKey = ""
     @State private var showToken = false
 
-    private var mode: AuthMode { engine.preferences.authMode }
+    /// Which source the panel below is *describing*. Nil means the one in use.
+    /// Clicking a radio used to commit outright, so reading a description you
+    /// then rejected had already switched Torpor's usage source.
+    @State private var highlighted: AuthMode?
 
-    private var refreshHelp: String {
+    private var mode: AuthMode { engine.preferences.authMode }
+    private var shown: AuthMode { highlighted ?? mode }
+
+    /// Why Refresh is unavailable, or nil when it isn't — one source of truth
+    /// for both the disabled state and the explanation beside it.
+    private var refreshBlockedReason: String? {
         if !engine.preferences.liveFetchPermitted {
             return "Accept the account-risk notice first."
         }
         let wait = engine.nextFetchAllowed.timeIntervalSinceNow
         if wait > 0 {
-            return "Anthropic rate-limits this endpoint. Next refresh available in \(Fmt.duration(wait))."
+            return "Anthropic rate-limits this endpoint. Next refresh in \(Fmt.duration(wait))."
         }
-        return "Ask Anthropic for current usage."
+        return nil
     }
 
     var body: some View {
@@ -99,7 +103,7 @@ struct AccountTab: View {
                 }
 
                 Divider()
-                detailForSelectedMode()
+                detail(for: shown)
             }
             .padding(20)
         }
@@ -110,8 +114,15 @@ struct AccountTab: View {
             pastedToken = ""
             consoleKey = ""
             showToken = false
+            highlighted = nil
         }
-        .onChange(of: mode) { showToken = false }
+        // Both detail panels commit a mode of their own (Connect, Save token),
+        // so the highlight has to resync or the panel would keep describing
+        // the source the user just moved away from.
+        .onChange(of: mode) {
+            showToken = false
+            highlighted = nil
+        }
     }
 
     private var statusCard: some View {
@@ -130,11 +141,22 @@ struct AccountTab: View {
                 }
             }
             Spacer()
+            // Deliberately keyed off the committed mode, not the highlighted
+            // one: Refresh acts on what is running, not on what is being read.
             if mode != .statusline {
-                Button("Refresh") { engine.forceRefreshAccount() }
-                    .disabled(!engine.preferences.liveFetchPermitted
-                              || Date() < engine.nextFetchAllowed)
-                    .help(refreshHelp)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Button("Refresh") { engine.forceRefreshAccount() }
+                        .disabled(refreshBlockedReason != nil)
+                    // macOS suppresses tooltips on disabled controls, so the one
+                    // thing needed in order to enable it was the one thing that
+                    // could not be read.
+                    if let reason = refreshBlockedReason {
+                        Text(reason)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: 180, alignment: .trailing)
+                    }
+                }
             }
         }
         .padding(12)
@@ -142,36 +164,60 @@ struct AccountTab: View {
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    /// Highlight, then commit. Tapping a row used to write `authMode` outright,
+    /// so reading what a source does switched Torpor onto it — and could blank
+    /// the gauges — before the description had even been read.
     private func sourceRow(_ option: AuthMode) -> some View {
-        Button {
-            engine.preferences.authMode = option
-        } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: mode == option ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(mode == option ? Color.accentColor : Color.secondary)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(option.label).font(.callout).foregroundStyle(.primary)
-                        if option.isSanctioned {
-                            Tag("Allowed by Anthropic", color: .green)
-                        } else {
-                            Tag("Can get you banned", color: .red)
+        HStack(alignment: .top, spacing: 10) {
+            Button {
+                highlighted = option
+            } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    // The radio keeps reflecting the committed mode only, so
+                    // the glyph never claims a source Torpor is not using.
+                    Image(systemName: mode == option ? "largecircle.fill.circle" : "circle")
+                        .foregroundStyle(mode == option ? Color.accentColor : Color.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(option.label).font(.callout).foregroundStyle(.primary)
+                            if option.isSanctioned {
+                                Tag("Allowed by Anthropic", color: .green)
+                            } else {
+                                Tag("Can get you banned", color: .red)
+                            }
                         }
+                        Text(option.summary)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(option.summary)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
                 }
-                Spacer()
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows how this source works. It is not used until you choose it.")
+            // Reports which source is in use, not which is being read.
+            .accessibilityAddTraits(mode == option ? [.isSelected] : [])
+
+            // Sibling, not nested inside the row's own Button: a control inside
+            // another button's label never receives the click.
+            if shown == option, option != mode {
+                Button("Use this source") {
+                    engine.preferences.authMode = option
+                    highlighted = nil
+                }
+                .controlSize(.small)
+                .fixedSize()
+            }
         }
-        .buttonStyle(.plain)
+        .padding(6)
+        .background(shown == option ? Color.accentColor.opacity(0.08) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
-    private func detailForSelectedMode() -> some View {
-        switch mode {
+    private func detail(for shownMode: AuthMode) -> some View {
+        switch shownMode {
         case .statusline:
             VStack(alignment: .leading, spacing: 10) {
                 Text("Usage reporter for Claude Code").font(.headline)
@@ -222,19 +268,24 @@ struct AccountTab: View {
 
         case .cliCredentials, .pastedToken:
             VStack(alignment: .leading, spacing: 12) {
+                // Consent is recorded per mode, and `liveFetchPermitted` also
+                // requires that mode to be the selected one — so accepting the
+                // notice while merely reading about a source cannot cause a
+                // request. Anyone changing `liveFetchPermitted` later has to
+                // keep that conjunction.
                 RiskPanel(
-                    note: mode.riskNote ?? "",
+                    note: shownMode.riskNote ?? "",
                     accepted: Binding(
-                        get: { engine.preferences.acknowledgedRiskModes.contains(mode) },
+                        get: { engine.preferences.acknowledgedRiskModes.contains(shownMode) },
                         set: { accepted in
-                            if accepted { engine.preferences.acknowledgedRiskModes.insert(mode) }
-                            else { engine.preferences.acknowledgedRiskModes.remove(mode) }
+                            if accepted { engine.preferences.acknowledgedRiskModes.insert(shownMode) }
+                            else { engine.preferences.acknowledgedRiskModes.remove(shownMode) }
                         }
                     )
                 )
 
-                if engine.preferences.acknowledgedRiskModes.contains(mode) {
-                    if mode == .cliCredentials {
+                if engine.preferences.acknowledgedRiskModes.contains(shownMode) {
+                    if shownMode == .cliCredentials {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Connect with Claude CLI").font(.headline)
                             Text(engine.accountStatus.claudeCodeCredentialsAvailable
@@ -370,7 +421,9 @@ struct Tag: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 9, weight: .bold))
+            // Not 9pt: this is the label that says "can get you banned", and
+            // 9pt is below the smallest text style macOS itself defines.
+            .font(.caption2).bold()
             .kerning(0.5)
             .padding(.horizontal, 5).padding(.vertical, 2)
             .background(color.opacity(0.18), in: Capsule())
@@ -386,141 +439,147 @@ struct AppearanceTab: View {
     private var colourExplanation: String {
         switch engine.preferences.colorMode {
         case .adaptive:
-            return engine.preferences.menuBarMetric == .memory
-                ? "Green below 60%, amber to 85%, red above — measured against your Mac's total RAM, so this usually stays green unless Claude Code is dominating the machine."
-                : "Green below 60%, amber to 85%, red above — on both the gauge and the number."
+            return "Green below 60%, amber to 85%, red above — on the bar and, in the Percentage style, on the number. The memory figure keeps its own colour, which says which figure it is rather than how far along it is."
         case .monochrome:
-            return "No colour at all: the gauge and number follow the menu bar's own tint. Tidy, but 95% looks the same as 5%."
+            return "No colour at all: everything follows the menu bar's own tint. Tidy, but 95% looks the same as 5%, and the memory figure looks the same either way."
         case .accent:
-            return "Your system accent colour at every level, so the gauge shows the amount but not the urgency."
+            return "Your system accent colour at every level, so the bar shows the amount but not the urgency. The memory figure keeps its green or orange."
         }
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Menu bar style").font(.headline)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)],
-                              alignment: .leading, spacing: 10) {
-                        ForEach(MenuBarStyle.allCases) { style in
-                            StylePreview(style: style, engine: engine)
+        VStack(spacing: 0) {
+            // Pinned above the scroll, not merely first inside it: this
+            // previews the controls below, and scrolling to the colour picker
+            // took it off screen exactly while it was being changed.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Live preview").font(.caption).foregroundStyle(.secondary)
+                MenuBarPreview(engine: engine)
+                Text("Two columns. The first is your \(engine.preferences.menuBarMetric.label.lowercased()) — the bar, with how long is left underneath it. The second is \(engine.preferences.memoryFigure.label.lowercased()). Every combination below draws that same layout.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 10)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Menu bar style").font(.headline)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)],
+                                  alignment: .leading, spacing: 10) {
+                            ForEach(MenuBarStyle.allCases) { style in
+                                StylePreview(style: style, engine: engine)
+                            }
                         }
+                        Text(engine.preferences.menuBarStyle == .bar
+                             ? "The bar carries the level, so the exact percentage is in the tooltip — hover the icon to read it."
+                             : "No bar: the first column is the percentage with the time remaining under it, and the memory figure sits beside both.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Picker("Show", selection: $engine.preferences.menuBarMetric) {
-                        ForEach(MenuBarMetric.allCases) { Text($0.label).tag($0) }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Bar shows", selection: $engine.preferences.menuBarMetric) {
+                            ForEach(MenuBarMetric.allCases) { Text($0.label).tag($0) }
+                        }
+                        Text(engine.preferences.menuBarMetric.gaugeMeaning)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(engine.preferences.menuBarMetric.gaugeMeaning)
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
 
-                    if engine.preferences.menuBarMetric == .model {
-                        if engine.availableUsageRows.isEmpty {
-                            Label("No model-specific limits reported yet. Anthropic only sends these for models your plan meters separately, and only after a session has made a request.",
-                                  systemImage: "info.circle")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Figure shows", selection: $engine.preferences.memoryFigure) {
+                            ForEach(MemoryFigure.allCases) { Text($0.label).tag($0) }
+                        }
+                        Text(engine.preferences.memoryFigure.meaning + " "
+                             + engine.preferences.memoryFigure.colourNote(engine.preferences.colorMode))
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Picker("Colour", selection: $engine.preferences.colorMode) {
+                            ForEach(ColorMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        Text(colourExplanation)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        // Named for the slot rather than for the bar, because
+                        // the Percentage style has no bar for it to be under.
+                        Picker("Second row", selection: $engine.preferences.timeMarker) {
+                            ForEach(TimeMarker.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        Text("A percentage on its own does not tell you whether to slow down; how long is left does. It sits under the bar as a duration — \"1h 33m\" — because that is the question, and because Claude's own usage screen phrases it the same way. Switching it off gives the item back a single, taller row.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if engine.preferences.menuBarStyle == .bar {
+                            Text("The white line across the bar is the same clock. Fill short of it means you are inside the pace your window can carry; fill past it means you are burning faster than the clock.")
                                 .font(.caption2).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
-                        } else {
-                            Picker("Model", selection: $engine.preferences.menuBarModel) {
-                                ForEach(engine.availableUsageRows, id: \.self) { Text($0).tag($0) }
-                            }
-                            // menuBarModel defaults to "" and is never pruned
-                            // when the server stops reporting a row, so without
-                            // this the Picker shows a blank selection and the
-                            // menu bar reads "no model set".
-                            .onAppear {
-                                if !engine.availableUsageRows.contains(engine.preferences.menuBarModel) {
-                                    engine.preferences.menuBarModel = engine.availableUsageRows.first ?? ""
-                                }
-                            }
                         }
                     }
-                }
 
-                Divider()
+                    Divider()
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Rows shown when you click the menu bar icon").font(.headline)
-                    if engine.availableUsageRows.isEmpty {
-                        Text("The 5-hour and weekly windows always show. A per-model bar (Fable, Opus, Sonnet) needs Anthropic to send a separate limit for that model, and the statusline payload does not carry one. Only the token-based sources above receive model-scoped limits. Until then the panel shows your model split by tokens read from your own transcripts, which is spend rather than quota.")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        ForEach(engine.availableUsageRows, id: \.self) { row in
-                            Toggle(isOn: Binding(
-                                get: { !engine.preferences.hiddenUsageRows.contains(row) },
-                                set: { shown in
-                                    if shown { engine.preferences.hiddenUsageRows.remove(row) }
-                                    else { engine.preferences.hiddenUsageRows.insert(row) }
-                                }
-                            )) {
-                                HStack(spacing: 6) {
-                                    Text(row).font(.callout)
-                                    if let window = engine.quota?.scoped[row] {
-                                        Text("\(Int(window.usedPercentage))% used")
-                                            .font(.caption2).foregroundStyle(.secondary)
+                    // Everything above describes the status item; this describes
+                    // the panel behind it. It used to sit in the middle of the
+                    // item's own settings, between the metric picker and the
+                    // colour picker.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Rows shown when you click the menu bar icon").font(.headline)
+                        if engine.availableUsageRows.isEmpty {
+                            Text("The 5-hour and weekly windows always show. A per-model bar (Fable, Opus, Sonnet) needs Anthropic to send a separate limit for that model, and the statusline payload does not carry one. Only the token-based sources on the Account tab receive model-scoped limits. Until then the panel shows your model split by tokens read from your own transcripts, which is spend rather than quota.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            ForEach(engine.availableUsageRows, id: \.self) { row in
+                                Toggle(isOn: Binding(
+                                    get: { !engine.preferences.hiddenUsageRows.contains(row) },
+                                    set: { shown in
+                                        if shown { engine.preferences.hiddenUsageRows.remove(row) }
+                                        else { engine.preferences.hiddenUsageRows.insert(row) }
+                                    }
+                                )) {
+                                    HStack(spacing: 6) {
+                                        Text(row).font(.callout)
+                                        if let window = engine.quota?.scoped[row] {
+                                            Text("\(Int(window.usedPercentage))% used")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
+                                .controlSize(.small)
                             }
-                            .controlSize(.small)
+                            Text("Only models Anthropic actually meters separately on your plan are listed. Torpor never invents a row.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text("Only models Anthropic actually meters separately on your plan are listed. Torpor never invents a row.")
+                    }
+
+                    Divider()
+
+                    // The single copy of this toggle. Sessions carried a second one
+                    // bound to the same preference, with different explanatory
+                    // text, so flipping either silently moved the other.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Hide from the menu bar when no session is running",
+                               isOn: $engine.preferences.hideWhenIdle)
+                            .font(.callout)
+                        Text("Torpor stays running. Open it again from Spotlight or Finder to bring the icon back. Always suppressed if the session list stops parsing, so the app can't vanish at the moment something has gone wrong.")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Picker("Colour", selection: $engine.preferences.colorMode) {
-                        ForEach(ColorMode.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    Text(colourExplanation)
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Picker("Reset countdown", selection: $engine.preferences.timeMarker) {
-                        ForEach(TimeMarker.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(!engine.preferences.menuBarMetric.hasResetWindow)
-                    Text(engine.preferences.menuBarMetric.hasResetWindow
-                         ? "A percentage on its own does not tell you whether to slow down. The countdown does. Reset times later this week carry their weekday; anything further out carries the date."
-                         : "Session memory has no reset window, so there is no countdown to show.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Hide from the menu bar when no session is running",
-                           isOn: $engine.preferences.hideWhenIdle)
-                        .font(.callout)
-                    Text("Torpor stays running. Open it again from Spotlight or Finder to bring the icon back.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Divider()
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Live preview").font(.caption).foregroundStyle(.secondary)
-                    MenuBarPreview(engine: engine)
-                    if engine.preferences.menuBarStyle == .bar {
-                        Text(engine.preferences.menuBarMetric.hasResetWindow
-                             ? "The white line marks how far through the window you are. Fill short of the line means you are inside the pace your window can carry; fill past it means you are burning faster than the clock."
-                             : "The bar is memory as a share of RAM. The white line marks how far through your quota window you are — a different measurement, shown here only because the clock is useful regardless.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+                .padding(20)
             }
-            .padding(20)
         }
     }
 }
@@ -561,13 +620,24 @@ struct StylePreview: View {
             engine.preferences.menuBarStyle = style
         } label: {
             HStack(spacing: 8) {
+                // Stand-in numbers, but the real layout: bar over the time
+                // remaining, then the memory figure, in the colours the user's
+                // current choices produce. A card that showed only the gauge
+                // could not show what these two styles actually differ by —
+                // and one that hard-coded `marker: .none` could not show the
+                // second row at all, which is now half of the layout.
                 MenuBarSample(input: MenuBarRenderer.Input(
                     style: style,
                     colorMode: engine.preferences.colorMode,
-                    marker: .none,
-                    fraction: 0.68, percentText: "68%", resetsAt: nil,
+                    marker: engine.preferences.timeMarker,
+                    fraction: 0.68, percentText: "68%",
+                    memoryText: "1.24 GB",
+                    memoryColor: MenuBarRenderer.memoryTint(
+                        for: engine.preferences.memoryFigure,
+                        mode: engine.preferences.colorMode),
+                    resetsAt: Date().addingTimeInterval(5_580),
                     sessionCount: 3, isStale: false, windowElapsed: 0.45))
-                    .frame(height: 22)
+                    .frame(height: MenuBarRenderer.compositeHeight)
                 Text(style.label).font(.caption)
                 Spacer()
                 if isSelected {
@@ -593,10 +663,15 @@ struct MenuBarPreview: View {
 
     var body: some View {
         HStack {
-            MenuBarSample(input: engine.menuBarInput).frame(height: 22)
+            MenuBarSample(input: engine.menuBarInput)
+                .frame(height: MenuBarRenderer.compositeHeight)
             Spacer()
+            // Two halves, two reasons to be empty, so say which one is.
             if engine.menuBarInput.fraction == nil {
-                Text("no value yet — this fills once usage data arrives")
+                Text("no limit reading yet — the bar fills once usage data arrives")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else if engine.menuBarInput.memoryText == nil {
+                Text("no sessions running — the memory figure appears when one starts")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -622,12 +697,6 @@ struct SessionsTab: View {
                     Text(LoginItem.isAvailable
                          ? "A session monitor that only runs when you remember to open it can't notice something went idle three days ago."
                          : "Available once Torpor is run as an app bundle.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Toggle("Hide from the menu bar when no session is running",
-                           isOn: $engine.preferences.hideWhenIdle)
-                        .font(.callout)
-                    Text("Torpor stays running. Open it again from Spotlight or Finder to bring the icon back. Always suppressed if the session list stops parsing, so the app can't vanish at the moment something has gone wrong.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -678,7 +747,7 @@ struct SessionsTab: View {
                     LabeledStepper(title: "Treat a session as idle after",
                                    value: $engine.preferences.notifyIdleMinutes,
                                    step: 15, range: 5...480, unit: "min")
-                    Text("Used by idle notifications and by the Reclaim button in the menu bar panel — that button hibernates every session Claude Code reports as idle for longer than this. Auto-hibernate below has its own, separate threshold.")
+                    Text("Used by idle notifications and by the Hibernate idle button at the top of the menu bar panel — that button hibernates every session Claude Code reports as idle for longer than this. Auto-hibernate below has its own, separate threshold.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -733,7 +802,7 @@ struct NotificationsTab: View {
                         LabeledStepper(title: "Notify when an idle session holds at least",
                                        value: $engine.preferences.notifyIdleFootprintMB,
                                        step: 50, range: 50...4000, unit: "MB")
-                        Text("How long counts as idle is set on the Sessions tab, because the same threshold drives the Reclaim button.")
+                        Text("How long counts as idle is set on the Sessions tab, because the same threshold drives the Hibernate idle button in the menu bar panel.")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -745,7 +814,7 @@ struct NotificationsTab: View {
                         LabeledStepper(title: "Warn when a limit passes",
                                        value: $engine.preferences.notifyQuotaPercent,
                                        step: 5, range: 50...99, unit: "%")
-                        Text("Checked against your 5-hour and weekly windows separately, so each can alert on its own. Model-specific limits and memory don't trigger this.")
+                        Text("Checked against your 5-hour and weekly windows separately, so each can alert on its own. Model-specific limits don't trigger this, and neither does memory — idle sessions have their own threshold above.")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -919,7 +988,7 @@ struct DailyCostChart: View {
                 Spacer()
                 Text(days.last?.date.formatted(date: .abbreviated, time: .omitted) ?? "")
             }
-            .font(.system(size: 9)).foregroundStyle(.secondary)
+            .font(.caption2).foregroundStyle(.secondary)
         }
     }
 }

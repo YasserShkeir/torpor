@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 
@@ -35,7 +36,17 @@ final class Engine: ObservableObject {
     @Published private(set) var sessions: [Session] = []
     @Published private(set) var hibernated: [HibernatedSession] = []
     @Published private(set) var quota: QuotaSnapshot?
+    /// The two sources are kept apart and merged into `quota` on every write.
+    /// The statusline snapshot refreshes whenever a session draws its prompt
+    /// but reports only the windows Claude Code sends; the API snapshot is the
+    /// only source of the other model-scoped rows and of credits context.
+    private var statuslineQuota: QuotaSnapshot?
+    private var apiQuota: QuotaSnapshot?
     @Published private(set) var tokens: [String: TokenTotals] = [:]
+    /// Cost and context-window occupancy per session, straight from Claude
+    /// Code's own figures. Keyed by session id and pruned to live sessions on
+    /// every refresh.
+    @Published private(set) var sessionUsage: [String: SessionUsage] = [:]
     @Published private(set) var statuslineState: StatuslineInstaller.State = .notInstalled
     @Published private(set) var lastError: String?
     /// Non-error feedback for an action that succeeded but did something worth
@@ -71,11 +82,19 @@ final class Engine: ObservableObject {
     @Published private(set) var nextFetchAllowed: Date = .distantPast
     /// Sparkle owns the update UI end to end, so the engine only needs to hold
     /// the controller and expose it to the About tab.
-    let updater = Updater()
+    let updater: Updater
+    /// `updater` is a nested ObservableObject held as a plain `let`, so its
+    /// own @Published changes never reach a view observing the Engine — the
+    /// About tab would keep showing "never checked" after a check completed.
+    private var updaterRepublish: AnyCancellable?
     private var saveTask: Task<Void, Never>?
 
     @Published var preferences = Preferences() {
         didSet {
+            // A read-only engine must not write preferences or re-register the
+            // login item: --render-live sweeps every menu-bar metric through
+            // this property just to draw them.
+            guard sideEffects else { return }
             // Coalesced: the didSet fires on every repeat-key tick of a stepper,
             // and each save is a synchronous pretty-printed encode plus atomic
             // write on the main actor.
@@ -130,6 +149,10 @@ final class Engine: ObservableObject {
     }
 
     private let store = HibernationStore()
+    /// One store for the whole engine: freeze, thaw and the poll-time sweep all
+    /// read and write the same file, and separate instances would each hold a
+    /// stale copy and overwrite the others.
+    private let frozenStore = FrozenStore()
     private let scanner = TranscriptScanner()
     /// In-flight token scan, cancelled when a newer refresh supersedes it.
     private var scanTask: Task<Void, Never>?
@@ -175,6 +198,18 @@ final class Engine: ObservableObject {
 
     var weekTokens: TokenTotals {
         tokens.values.reduce(TokenTotals(), +)
+    }
+
+    /// What the open sessions have cost, summed from Claude Code's own
+    /// per-session figures.
+    ///
+    /// Deliberately NOT read from `quota` or the shared statusline snapshot.
+    /// That file is overwritten by whichever session drew its statusline last,
+    /// so its `cost` block is one arbitrary session's running total — showing
+    /// it as an account figure makes the number jump between sessions on every
+    /// poll. Only the per-session files can be summed to something meaningful.
+    var weekCostUSD: Double {
+        sessionUsage.values.compactMap(\.costUSD).reduce(0, +)
     }
 
     // MARK: - Grouping
@@ -260,8 +295,20 @@ final class Engine: ObservableObject {
 
     init(sideEffects: Bool = true) {
         self.sideEffects = sideEffects
+        // Sparkle's scheduled updater is a side effect: without this, rendering
+        // a screenshot started a background update check.
+        updater = Updater(starting: sideEffects)
         preferences = Preferences.load()
+        updaterRepublish = updater.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         guard sideEffects else { refresh(); return }
+        // Bring an installed shim up to the current format before anything
+        // reads what it writes. Without this an existing user keeps last
+        // release's script, which never emits the cost, context or per-session
+        // fields, so those stay empty for them forever. No-op when the shim is
+        // absent or already current.
+        StatuslineInstaller.refreshIfStale()
         reconcileLoginItem()
         notifier.requestAuthorization()
         refresh()
@@ -279,9 +326,10 @@ final class Engine: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
-        // Flush anything the coalescing window was still holding.
+        // Flush anything the coalescing window was still holding. A read-only
+        // engine never scheduled one and must not write preferences at all.
         saveTask?.cancel()
-        preferences.save()
+        if sideEffects { preferences.save() }
     }
 
     // MARK: - Refresh
@@ -303,17 +351,23 @@ final class Engine: ObservableObject {
         if sideEffects {
             for record in store.sessions
             where live.contains(record.sessionId) && !inFlightHibernations.contains(record.sessionId) {
-                store.remove(sessionId: record.sessionId)
+                // Opportunistic prune: a failed write must not abort the whole
+                // refresh, and the next poll will try again.
+                try? store.remove(sessionId: record.sessionId)
             }
+            // Recover frozen subtrees whose session has since died. Nothing in
+            // the session list refers to them, so there is no button that could
+            // reach a SIGSTOPped MCP server reparented to launchd.
+            SessionControl.sweepFrozen(store: frozenStore)
         }
         hibernated = store.sessions
 
         // The statusline snapshot is always read: it costs nothing and it is
         // the fallback whenever a live fetch is unavailable or rate limited.
-        let local = QuotaReader.read()
-        if quota == nil || preferences.authMode == .statusline || (local?.age ?? .infinity) < (quota?.age ?? .infinity) {
-            quota = local ?? quota
-        }
+        // `?? statuslineQuota` keeps the last good read when the snapshot file
+        // is transiently unreadable.
+        statuslineQuota = QuotaReader.read() ?? statuslineQuota
+        quota = Self.merged(statusline: statuslineQuota, api: apiQuota)
         statuslineState = StatuslineInstaller.currentState()
         accountStatus.claudeCodeCredentialsAvailable =
             sideEffects && CredentialStore.claudeCodeCredentialsPresent()
@@ -323,11 +377,9 @@ final class Engine: ObservableObject {
         }
         // Reconcile with launchd rather than trusting our own stored flag: the
         // user can revoke a login item in System Settings, and the toggle would
-        // otherwise keep claiming it is on.
-        if LoginItem.isAvailable {
-            let actual = LoginItem.isEnabled
-            if actual != preferences.launchAtLogin { preferences.launchAtLogin = actual }
-        }
+        // otherwise keep claiming it is on. Never on a read-only engine —
+        // assigning the flag re-registers the login item.
+        if sideEffects { reconcileLoginItem() }
         refreshAccountStatus()
 
         if sideEffects, preferences.liveFetchPermitted { Task { await fetchLive() } }
@@ -335,11 +387,45 @@ final class Engine: ObservableObject {
         // Drop state for sessions that have ended, so neither the scanner's
         // caches nor the "tokens across open sessions" total grow forever.
         tokens = tokens.filter { live.contains($0.key) }
+        // One small file per live session — the same cost class as
+        // QuotaReader.read(), so it belongs on the main refresh path rather
+        // than in the off-actor scan. `live` must be the real set: an empty one
+        // deliberately prunes nothing, because it means "we could not enumerate
+        // sessions", not "nothing is running".
+        sessionUsage = QuotaReader.sessionUsage(live: live)
         rescanTokens(sessions: loaded, live: live)
 
         guard sideEffects else { return }
         evaluateNotifications()
         if preferences.autoHibernateEnabled { runAutoHibernate() }
+    }
+
+    /// One quota view from two sources, merged per window rather than by
+    /// replacement.
+    ///
+    /// Whichever snapshot was captured most recently wins each window it
+    /// reports, but rows only the other source produces are kept. Replacing
+    /// wholesale meant any session drawing its statusline erased every
+    /// model-scoped row that exists only on the API path.
+    nonisolated static func merged(statusline: QuotaSnapshot?,
+                                   api: QuotaSnapshot?) -> QuotaSnapshot? {
+        guard let statusline else { return api }
+        guard let api else { return statusline }
+        let (fresh, stale) = statusline.capturedAt >= api.capturedAt
+            ? (statusline, api) : (api, statusline)
+        // A carried-over window whose reset time has passed describes a period
+        // that has already ended — drop it rather than show it as current.
+        func live(_ window: QuotaSnapshot.Window?) -> QuotaSnapshot.Window? {
+            guard let window, (window.resetsAt ?? .distantFuture) > Date() else { return nil }
+            return window
+        }
+        var scoped = stale.scoped.compactMapValues(live)
+        scoped.merge(fresh.scoped) { _, new in new }
+        return QuotaSnapshot(fiveHour: fresh.fiveHour ?? live(stale.fiveHour),
+                             sevenDay: fresh.sevenDay ?? live(stale.sevenDay),
+                             scoped: scoped,
+                             capturedAt: fresh.capturedAt,
+                             sourceSessionId: fresh.sourceSessionId ?? stale.sourceSessionId)
     }
 
     /// Token totals, computed off the main actor and published when they land.
@@ -372,11 +458,11 @@ final class Engine: ObservableObject {
     // MARK: - Actions
 
     func freeze(_ session: Session) {
-        perform { try SessionControl.freeze(session: session) }
+        perform { try SessionControl.freeze(session: session, store: self.frozenStore) }
     }
 
     func thaw(_ session: Session) {
-        perform { try SessionControl.thaw(session: session) }
+        perform { try SessionControl.thaw(session: session, store: self.frozenStore) }
     }
 
     /// Hibernate one session.
@@ -391,18 +477,23 @@ final class Engine: ObservableObject {
             refresh()
             return
         }
+        // A poll-tick auto-hibernate may already be running against this very
+        // session. Both would capture and terminate it, and whichever finished
+        // first would clear the in-flight mark, letting the next poll's prune
+        // delete the record — the only copy of the captured argv — from under
+        // the other.
+        guard !inFlightHibernations.contains(session.sessionId) else { return }
         isBusyWithBatch = true
         inFlightHibernations.insert(session.sessionId)
         Task {
-            let freed = await SessionControl.hibernate(sessions: [session], store: store)
-            // Re-add on the main actor: the batch runs off it, and rewriting the
-            // store from the cooperative pool would use a stale copy and could
-            // resurrect something the user just chose to forget.
-            for record in freed { store.add(record) }
+            let (freed, failures) = await SessionControl.hibernate(sessions: [session], store: store)
             inFlightHibernations.remove(session.sessionId)
             isBusyWithBatch = false
+            // The real reason, not a guess. A session refused for an inline
+            // --mcp-config is not one whose command line could not be read.
             lastError = freed.isEmpty
-                ? "Could not hibernate \(session.projectName): its command line could not be read, so it would not be restorable."
+                ? (failures.first?.error.localizedDescription
+                   ?? "Could not hibernate \(session.projectName).")
                 : nil
             refresh()
         }
@@ -412,8 +503,10 @@ final class Engine: ObservableObject {
     /// the set the header's "Reclaim N" button describes.
     func hibernateIdleSessions() {
         let cutoff = max(0, preferences.notifyIdleMinutes) * 60
+        // Anything already being hibernated is dropped, not hibernated twice.
         let targets = sessions.filter {
             $0.declaredStatus == "idle" && ($0.idleFor ?? 0) >= cutoff
+                && !inFlightHibernations.contains($0.sessionId)
         }
         guard !targets.isEmpty else {
             lastError = "Nothing is idle enough to reclaim right now."
@@ -422,18 +515,35 @@ final class Engine: ObservableObject {
         isBusyWithBatch = true
         inFlightHibernations.formUnion(targets.map(\.sessionId))
         Task {
-            let freed = await SessionControl.hibernate(sessions: targets, store: store)
-            for record in freed { store.add(record) }
+            let (freed, failures) = await SessionControl.hibernate(sessions: targets, store: store)
             inFlightHibernations.subtract(targets.map(\.sessionId))
             isBusyWithBatch = false
             let bytes = freed.reduce(UInt64(0)) { $0 + $1.reclaimedBytes }
             lastNotice = freed.isEmpty ? nil
                 : "Hibernated \(freed.count) session\(freed.count == 1 ? "" : "s"), freeing \(Fmt.bytes(bytes))."
-            lastError = freed.count < targets.count
-                ? "\(targets.count - freed.count) session\(targets.count - freed.count == 1 ? "" : "s") could not be ended."
-                : nil
+            lastError = Self.batchFailureMessage(freed: freed.count,
+                                                 attempted: targets.count,
+                                                 failures: failures)
             refresh()
         }
+    }
+
+    /// One sentence for a partial batch, naming the first real reason rather
+    /// than asserting a cause. "Could not be ended" is a count, not a
+    /// diagnosis; the store and the capture step both have specific errors.
+    private static func batchFailureMessage(
+        freed: Int, attempted: Int,
+        failures: [(session: Session, error: any Error)]) -> String? {
+        guard freed < attempted else { return nil }
+        let missed = attempted - freed
+        let plural = missed == 1 ? "" : "s"
+        guard let first = failures.first else {
+            return "\(missed) session\(plural) could not be ended."
+        }
+        let detail = first.error.localizedDescription
+        return missed == 1
+            ? "Could not hibernate \(first.session.projectName): \(detail)"
+            : "\(missed) session\(plural) could not be ended. \(first.session.projectName): \(detail)"
     }
 
     /// Hibernate every session in a project group.
@@ -443,7 +553,9 @@ final class Engine: ObservableObject {
     /// the click, and terminating a session that just started working would be
     /// unrecoverable from the user's point of view.
     func hibernateGroup(_ group: ProjectGroup) {
-        let targets = group.sessions.filter { $0.declaredStatus == "idle" }
+        let targets = group.sessions.filter {
+            $0.declaredStatus == "idle" && !inFlightHibernations.contains($0.sessionId)
+        }
         guard !targets.isEmpty else {
             lastError = "Those sessions are no longer idle."
             return
@@ -451,15 +563,12 @@ final class Engine: ObservableObject {
         isBusyWithBatch = true
         inFlightHibernations.formUnion(targets.map(\.sessionId))
         Task {
-            let freed = await SessionControl.hibernate(sessions: targets, store: store)
-            for record in freed { store.add(record) }
+            let (freed, failures) = await SessionControl.hibernate(sessions: targets, store: store)
             inFlightHibernations.subtract(targets.map(\.sessionId))
             isBusyWithBatch = false
-            if freed.count < targets.count {
-                lastError = "Hibernated \(freed.count) of \(targets.count) sessions; the rest could not be captured."
-            } else {
-                lastError = nil
-            }
+            lastError = Self.batchFailureMessage(freed: freed.count,
+                                                 attempted: targets.count,
+                                                 failures: failures)
             refresh()
         }
     }
@@ -483,7 +592,15 @@ final class Engine: ObservableObject {
     }
 
     func forget(_ record: HibernatedSession) {
-        store.remove(sessionId: record.sessionId)
+        // Surfaced rather than swallowed: a forget that silently fails to write
+        // leaves the row on screen after the next refresh, which reads as the
+        // button not working.
+        do {
+            try store.remove(sessionId: record.sessionId)
+            lastError = nil
+        } catch {
+            lastError = "Could not forget \(record.name): \(error.localizedDescription)"
+        }
         hibernated = store.sessions
     }
 
@@ -610,7 +727,8 @@ final class Engine: ObservableObject {
                       let token = CredentialStore.subscriptionToken() else { return }
                 let (snapshot, balance) = try await api.fetchSubscription(
                     token: token, clientVersion: clientVersion)
-                quota = snapshot
+                apiQuota = snapshot
+                quota = Self.merged(statusline: statuslineQuota, api: apiQuota)
                 credits = balance
             case .consoleAPIKey:
                 guard let key = CredentialStore.consoleKey() else { return }
@@ -686,9 +804,6 @@ final class Engine: ObservableObject {
         forceRefreshAccount()
     }
 
-    /// Clear only the subscription token. Split from the Console key because a
-    /// single shared `disconnect()` meant rotating an API key also destroyed
-    /// the user's subscription credential.
     /// Why the usage panel is empty, in the user's terms.
     ///
     /// The old text said "install the shim" unconditionally, which is wrong
@@ -713,11 +828,25 @@ final class Engine: ObservableObject {
         }
     }
 
+    /// Why the session list is empty, in the user's terms.
+    ///
+    /// `registryLooksBroken` already suppresses auto-hide, but nothing ever
+    /// said so on screen: an upstream change to the session-file format read
+    /// as "you have nothing running" while sessions were plainly running.
+    var sessionsEmptyExplanation: String {
+        registryLooksBroken
+            ? "Torpor found session files it could not read — Claude Code's session format has probably changed. Freezing and hibernating are unavailable until Torpor understands it again; check for an update."
+            : "Nothing running. Torpor shows sessions as soon as you start one."
+    }
+
     /// Whether a subscription token is on disk, regardless of consent state —
     /// so the delete button can be shown even after consent is withdrawn.
     var hasStoredSubscriptionToken: Bool { CredentialStore.subscriptionToken() != nil }
     var hasStoredConsoleKey: Bool { CredentialStore.consoleKey() != nil }
 
+    /// Clear only the subscription token. Split from the Console key because a
+    /// single shared `disconnect()` meant rotating an API key also destroyed
+    /// the user's subscription credential.
     func clearSubscriptionCredential() {
         CredentialStore.clearSubscriptionToken()
         if preferences.authMode == .cliCredentials || preferences.authMode == .pastedToken {
@@ -725,10 +854,10 @@ final class Engine: ObservableObject {
         }
         preferences.acknowledgedRiskModes = []
         credits = CreditBalance()
-        // A snapshot obtained from the API has no source session id; leaving it
-        // in place meant the app kept showing percentages fetched with the
-        // token you just deleted, indefinitely.
-        if quota?.sourceSessionId == nil { quota = nil }
+        // Drop everything the deleted token fetched — including the model-scoped
+        // rows only that path produces. The statusline snapshot needs no
+        // credentials and survives; the refresh() below recomputes `quota`.
+        apiQuota = nil
         accountStatus.lastFetch = nil
         accountStatus.lastFetchError = nil
         refresh()
@@ -745,87 +874,68 @@ final class Engine: ObservableObject {
     // MARK: - Menu bar
 
     /// What the status item should draw right now.
+    ///
+    /// Always the same shape: one quota window as a bar, one memory figure
+    /// beside it. The preferences choose which window and which figure, not
+    /// whether either is there — so no setting can produce a layout the user
+    /// has to re-learn, and the bar is never a share of something that has no
+    /// share to be.
     var menuBarInput: MenuBarRenderer.Input {
-        var fraction: Double?
-        var resets: Date?
-        var windowLength: TimeInterval?
+        let window: QuotaSnapshot.Window?
+        let windowLength: TimeInterval
 
         switch preferences.menuBarMetric {
         case .fiveHour:
-            fraction = quota?.fiveHour.map { $0.usedPercentage / 100 }
-            resets = quota?.fiveHour?.resetsAt
+            window = quota?.fiveHour
             windowLength = 5 * 3600
         case .sevenDay:
-            fraction = quota?.sevenDay.map { $0.usedPercentage / 100 }
-            resets = quota?.sevenDay?.resetsAt
+            window = quota?.sevenDay
             windowLength = 7 * 86_400
-        case .highest:
-            let five = quota?.fiveHour.map { ($0, 5.0 * 3600) }
-            let week = quota?.sevenDay.map { ($0, 7.0 * 86_400) }
-            let candidates = [five, week].compactMap { $0 }
-            if let top = candidates.max(by: { $0.0.usedPercentage < $1.0.usedPercentage }) {
-                fraction = top.0.usedPercentage / 100
-                resets = top.0.resetsAt
-                windowLength = top.1
-            }
-        case .model:
-            // A specific model-scoped weekly window, e.g. Fable or Sonnet.
-            // Matched case-insensitively because the server names the rows.
-            if let match = quota?.scoped.first(where: {
-                $0.key.caseInsensitiveCompare(preferences.menuBarModel) == .orderedSame
-            }) {
-                fraction = match.value.usedPercentage / 100
-                resets = match.value.resetsAt
-                windowLength = 7 * 86_400
-            }
-        case .memory:
-            // Against *total* installed RAM. A quarter of it was still too small
-            // a denominator: 6.4 GB of sessions on an 18 GB machine clamped to
-            // 1.0, so the bar sat permanently full and hibernating 2 GB produced
-            // no visible change — which reads as "the progress bar is broken".
-            let installed = Double(ProcessInfo.processInfo.physicalMemory)
-            fraction = installed > 0 ? min(Double(totalFootprint) / installed, 1) : nil
         }
 
-        let percentText: String?
-        if preferences.menuBarMetric == .memory {
-            percentText = totalFootprint > 0 ? Fmt.bytes(totalFootprint) : nil
-        } else if let fraction {
-            percentText = "\(Int((fraction * 100).rounded()))%"
-        } else if preferences.menuBarMetric == .model {
-            // Selected "a specific model" but the server reports no limit for
-            // it — say so rather than showing an empty bar and no number.
-            percentText = preferences.menuBarModel.isEmpty ? "no model set" : "no limit"
-        } else {
-            percentText = nil
+        let fraction = window.map { $0.usedPercentage / 100 }
+        let resets = window?.resetsAt
+        let percentText = fraction.map { "\(Int(($0 * 100).rounded()))%" }
+
+        // Straight from the engine's own totals — never recomputed here, so the
+        // figure in the menu bar and the figure on the Reclaim button cannot
+        // disagree about what is idle.
+        let bytes: UInt64
+        switch preferences.memoryFigure {
+        case .total:       bytes = totalFootprint
+        case .reclaimable: bytes = reclaimableFootprint
         }
+        // With nothing running there is no figure to give: "0 MB" beside a
+        // quota bar is a number that can never change and answers nothing. With
+        // sessions running, a reclaimable zero is real information — it means
+        // nothing has been idle long enough yet — so it is shown.
+        let memoryText = sessions.isEmpty ? nil : Fmt.bytes(bytes)
 
         // Anthropic publishes the window structure (rolling 5-hour, weekly) but
         // not a start timestamp, so elapsed is derived from the reset time and
         // the known window length.
-        func elapsedFraction(resets: Date?, length: TimeInterval?) -> Double? {
-            guard let resets, let length, length > 0 else { return nil }
+        func elapsedFraction(resets: Date?, length: TimeInterval) -> Double? {
+            guard let resets, length > 0 else { return nil }
             let remaining = resets.timeIntervalSinceNow
             guard remaining > 0, remaining <= length else { return nil }
             return 1 - (remaining / length)
         }
 
-        var elapsed = elapsedFraction(resets: resets, length: windowLength)
-        if elapsed == nil {
-            // Metrics with no window of their own — session memory — still
-            // benefit from the clock: "how far through my 5-hour window am I"
-            // is useful regardless of what the gauge above it is measuring.
-            // Falling back here is what makes the time bar always present
-            // rather than silently missing on one metric.
-            elapsed = elapsedFraction(resets: quota?.fiveHour?.resetsAt, length: 5 * 3600)
-                ?? elapsedFraction(resets: quota?.sevenDay?.resetsAt, length: 7 * 86_400)
-        }
+        // Strictly this bar's own window. The white line is drawn across the
+        // fill, and the duration under it counts the same window down, so
+        // borrowing another window's clock would put two unrelated quantities
+        // in one column and read as pace information about a bar that has no
+        // pace.
+        let elapsed = elapsedFraction(resets: resets, length: windowLength)
 
         return .init(style: preferences.menuBarStyle,
                      colorMode: preferences.colorMode,
                      marker: preferences.timeMarker,
                      fraction: fraction,
                      percentText: percentText,
+                     memoryText: memoryText,
+                     memoryColor: MenuBarRenderer.memoryTint(for: preferences.memoryFigure,
+                                                             mode: preferences.colorMode),
                      resetsAt: resets,
                      sessionCount: sessions.count,
                      isStale: quota?.isStale ?? false,
@@ -893,18 +1003,31 @@ final class Engine: ObservableObject {
             guard session.declaredStatus == "idle",
                   let idle = session.idleFor, idle >= idleCutoff,
                   session.totalFootprint >= footprintCutoff,
-                  !session.isFrozen else { continue }
+                  !session.isFrozen,
+                  // Hibernating is now async, so the poll timer can fire again
+                  // — and the user can click Hibernate — while this one is
+                  // still in its SIGTERM grace period. Two overlapping
+                  // hibernates of one session race to remove the record.
+                  !inFlightHibernations.contains(session.sessionId) else { continue }
 
-            do {
-                let record = try SessionControl.hibernate(session: session, store: store)
-                guard preferences.notificationsEnabled else { continue }
-                notifier.post(
-                    key: "auto-\(record.sessionId)",
-                    title: "Hibernated \(record.name)",
-                    body: "Idle \(Fmt.duration(idle)) — reclaimed \(Fmt.bytes(record.reclaimedBytes)). Revive it from the menu bar."
-                )
-            } catch {
-                lastError = error.localizedDescription
+            inFlightHibernations.insert(session.sessionId)
+            // Deliberately not setting isBusyWithBatch: several auto-hibernates
+            // can be in flight at once and would race the flag back to false,
+            // and that flag exists to disable buttons the user could
+            // double-click, not to describe background work.
+            Task {
+                defer { inFlightHibernations.remove(session.sessionId) }
+                do {
+                    let record = try await SessionControl.hibernate(session: session, store: store)
+                    guard preferences.notificationsEnabled else { return }
+                    notifier.post(
+                        key: "auto-\(record.sessionId)",
+                        title: "Hibernated \(record.name)",
+                        body: "Idle \(Fmt.duration(idle)) — reclaimed \(Fmt.bytes(record.reclaimedBytes)). Revive it from the menu bar."
+                    )
+                } catch {
+                    lastError = error.localizedDescription
+                }
             }
         }
     }

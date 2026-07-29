@@ -5,8 +5,29 @@ struct PopoverView: View {
     @ObservedObject var engine: Engine
     var openSettings: () -> Void
     @State private var confirmingReclaimAll = false
+    /// sessionId of the record whose Forget is armed. Forget destroys the only
+    /// saved copy of a session's command line — the one action in this panel
+    /// that cannot be undone — so it is gated like hibernate, which can.
+    @State private var confirmingForget: String?
+    @ObservedObject private var log = MessageLog.shared
+    /// Deliberately not in Preferences: a preferences file that fails to decode
+    /// would otherwise replay the welcome to an existing user.
+    @AppStorage("hasSeenWelcome") private var hasSeenWelcome = false
 
     var body: some View {
+        // Torpor is an .accessory app, so without this a new user's first
+        // interaction is a bare notification-permission dialog from something
+        // with no window and no dock icon. The policy check keeps `--render`,
+        // which runs .prohibited, capturing the panel rather than the welcome.
+        if !hasSeenWelcome, NSApplication.shared.activationPolicy() == .accessory {
+            FirstRunView(engine: engine) { hasSeenWelcome = true }
+                .frame(width: 400)
+        } else {
+            mainPanel
+        }
+    }
+
+    private var mainPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
@@ -21,35 +42,20 @@ struct PopoverView: View {
             }
             .frame(maxHeight: 520)
 
-            if let error = engine.lastError {
+            if !log.messages.isEmpty {
                 Divider()
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange).font(.caption)
-                    Text(error)
-                        .font(.caption)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer()
-                }
-                .padding(.horizontal, 14).padding(.vertical, 7)
-            } else if let notice = engine.lastNotice {
-                Divider()
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .foregroundStyle(.secondary).font(.caption)
-                    Text(notice)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer()
-                }
-                .padding(.horizontal, 14).padding(.vertical, 7)
+                MessageStrip(log: log, horizontalPadding: 14)
             }
 
             Divider()
             footer
         }
         .frame(width: 400)
-        .onChange(of: engine.confirmationGeneration) { confirmingReclaimAll = false }
+        .logsEngineMessages(engine)
+        .onChange(of: engine.confirmationGeneration) {
+            confirmingReclaimAll = false
+            confirmingForget = nil
+        }
     }
 
     // MARK: - Header
@@ -88,7 +94,10 @@ struct PopoverView: View {
                     Button {
                         confirmingReclaimAll = true
                     } label: {
-                        Label("Reclaim \(Fmt.bytes(engine.reclaimableFootprint))",
+                        // Named for what it does. "Reclaim" was a fourth verb
+                        // for an action the rest of the app — including this
+                        // button's own tooltip — calls hibernate.
+                        Label("Hibernate \(reclaimableSessions.count) idle · \(Fmt.bytes(engine.reclaimableFootprint))",
                               systemImage: "moon.zzz.fill")
                             .font(.system(size: 11))
                     }
@@ -143,6 +152,19 @@ struct PopoverView: View {
             }
 
             if engine.credits.hasAnything { creditsRow }
+
+            // No tilde and no "about": this is Claude Code's own per-session
+            // figure, summed. Torpor prices nothing itself.
+            if engine.weekCostUSD > 0 {
+                HStack {
+                    Text("Open sessions, cost so far").font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("$\(String(format: "%.2f", engine.weekCostUSD))")
+                        .font(.system(size: 10, design: .rounded)).monospacedDigit()
+                }
+                .help("Claude Code computes a cost for each session; Torpor adds up the ones still open. On a Pro or Max plan your subscription covers it — this is what the work was worth, not a bill.")
+            }
 
             if let console = engine.console, console.monthToDateUSD > 0 {
                 HStack {
@@ -230,9 +252,34 @@ struct PopoverView: View {
                 }
             }
             if engine.sessions.isEmpty {
-                Text("Nothing running. Torpor shows sessions as soon as you start one.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.vertical, 4)
+                if engine.registryLooksBroken {
+                    // There are session files and Torpor decoded none of them,
+                    // which is not the same fact as "nothing is running" — and
+                    // rendering it as the latter is the app confidently saying
+                    // the opposite of the truth.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Torpor can't read the session list",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout).bold().foregroundStyle(.orange)
+                        Text(engine.sessionsEmptyExplanation)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            Button("Check for Updates…") { engine.updater.checkForUpdates() }
+                                .controlSize(.small)
+                                .disabled(!engine.updater.canCheck)
+                            Button("Report this") { NSWorkspace.shared.open(Links.issues) }
+                                .controlSize(.small)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+                } else {
+                    Text(engine.sessionsEmptyExplanation)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                }
             }
 
             if engine.preferences.groupByProject {
@@ -257,25 +304,48 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader("Hibernated")
             ForEach(engine.hibernated) { record in
-                HStack(spacing: 8) {
-                    Image(systemName: "moon.zzz.fill").foregroundStyle(.indigo)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(record.name).font(.callout)
-                        Text("\(Fmt.bytes(record.reclaimedBytes)) freed · \(Fmt.duration(Date().timeIntervalSince(record.hibernatedAt))) ago")
-                            .font(.caption2).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "moon.zzz.fill").foregroundStyle(.indigo)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(record.name).font(.callout)
+                            Text("\(Fmt.bytes(record.reclaimedBytes)) freed · \(Fmt.duration(Date().timeIntervalSince(record.hibernatedAt))) ago")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Revive") { engine.revive(record) }
+                            .controlSize(.small)
+                            .help(record.resumeCommand)
+
+                        if confirmingForget == record.sessionId {
+                            Button("Forget") {
+                                confirmingForget = nil
+                                engine.forget(record)
+                            }
+                            .controlSize(.small).tint(.red)
+                            Button { confirmingForget = nil } label: {
+                                Image(systemName: "xmark").font(.system(size: 8))
+                            }
+                            .buttonStyle(.borderless).controlSize(.mini)
+                        } else {
+                            Button { confirmingForget = record.sessionId } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                            .accessibilityLabel("Forget \(record.name)")
+                            .accessibilityHint("Discards the saved command line. The conversation stays on disk but Torpor can no longer reopen it for you.")
+                            .help("Forget this session. The conversation stays on disk, but Torpor loses the saved command line and can no longer reopen it for you.")
+                        }
                     }
-                    Spacer()
-                    Button("Revive") { engine.revive(record) }
-                        .controlSize(.small)
-                        .help(record.resumeCommand)
-                    Button { engine.forget(record) } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                        .accessibilityLabel("Forget \(record.name)")
-                        .accessibilityHint("Discards the saved command line. The conversation stays on disk but Torpor can no longer reopen it for you.")
-                        .help("Forget this session. The conversation stays on disk, but Torpor loses the saved command line and can no longer reopen it for you.")
+
+                    if confirmingForget == record.sessionId {
+                        Text("Torpor loses the command line it captured — flags like --mcp-config and --add-dir won't come back. The conversation stays on disk.")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .padding(9)
                 .background(Color.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
@@ -297,6 +367,10 @@ struct PopoverView: View {
 
             Button("Refresh") { engine.refresh() }
                 .buttonStyle(.borderless).controlSize(.small)
+                // The only action in this panel that is idempotent and ends
+                // nothing, so the only one that can safely carry a key
+                // equivalent in a transient popover.
+                .keyboardShortcut("r", modifiers: .command)
                 // Every hibernate button greys out during a batch; this one did
                 // not, and refresh runs the reconcile loop.
                 .disabled(engine.isBusyWithBatch)
@@ -306,6 +380,184 @@ struct PopoverView: View {
                 .keyboardShortcut("q", modifiers: .command)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+}
+
+// MARK: - First run
+
+/// One screen, shown once, before Torpor asks the user for anything.
+///
+/// Deliberately not a tour: two verbs, one offer and one warning about the
+/// permission dialog macOS is about to show. Closing the popover without
+/// choosing leaves it in place, which is right — nothing has been asked yet.
+struct FirstRunView: View {
+    @ObservedObject var engine: Engine
+    var done: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Torpor manages the Claude Code sessions you leave open.")
+                .font(.headline)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                verb("pause.circle.fill", .cyan, "Freeze",
+                     "Pauses a session so it uses no CPU. Its memory stays where it is. Thaw puts it back.")
+                verb("moon.zzz.fill", .orange, "Hibernate",
+                     "Ends a session and gives back all of its memory. The conversation is saved; Revive reopens it in a terminal.")
+            }
+
+            Divider()
+
+            Text("Usage percentages come from Claude Code's own statusline. Torpor can install a small script that captures them — no credentials, no network calls. Your prompt looks exactly the same.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("macOS may ask about notifications. Torpor uses them only for idle sessions and usage warnings.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                if engine.statuslineState != .installed {
+                    Button("Set up usage reporting") {
+                        engine.installStatusline()
+                        done()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+                Spacer()
+                Button("Skip") { done() }
+                    .buttonStyle(.borderless)
+            }
+        }
+        .padding(16)
+    }
+
+    private func verb(_ symbol: String, _ tint: Color, _ name: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(tint).frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).font(.callout).bold()
+                Text(text).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+// MARK: - Messages
+
+/// One error or notice, with the moment Torpor first saw it.
+struct LoggedMessage: Identifiable, Equatable {
+    enum Kind { case error, notice }
+    let id = UUID()
+    let kind: Kind
+    let text: String
+    let at: Date
+}
+
+/// The engine's errors and notices, with arrival times and a dismiss.
+///
+/// The engine publishes one `lastError` and one `lastNotice` slot: no
+/// timestamp, no dismiss, and clearing happens only when a *later* action
+/// succeeds — so a failure with no follow-up sat there forever and a second
+/// failure silently erased the first. Watching those two slots from the views
+/// that render them fixes all three without changing the engine, and sharing
+/// one instance means the popover and Settings agree on the list.
+final class MessageLog: ObservableObject {
+    static let shared = MessageLog()
+
+    @Published private(set) var messages: [LoggedMessage] = []
+
+    /// This is a strip above a footer, not a console.
+    private let cap = 5
+    private var lastSeenError: String?
+    private var lastSeenNotice: String?
+
+    func absorb(error: String?, notice: String?) {
+        // Compared against what was last *seen*, not what is still listed, so a
+        // dismissed message does not immediately come back while the engine
+        // still holds it in its slot.
+        if error != lastSeenError {
+            lastSeenError = error
+            add(.error, error)
+        }
+        if notice != lastSeenNotice {
+            lastSeenNotice = notice
+            add(.notice, notice)
+        }
+    }
+
+    func dismiss(_ id: UUID) { messages.removeAll { $0.id == id } }
+    func dismissAll() { messages.removeAll() }
+
+    private func add(_ kind: LoggedMessage.Kind, _ text: String?) {
+        guard let text, !text.isEmpty else { return }
+        messages.insert(LoggedMessage(kind: kind, text: text, at: Date()), at: 0)
+        if messages.count > cap { messages.removeLast(messages.count - cap) }
+    }
+}
+
+extension View {
+    /// Feeds the engine's one-slot error and notice into the shared log.
+    func logsEngineMessages(_ engine: Engine) -> some View {
+        onAppear {
+            MessageLog.shared.absorb(error: engine.lastError, notice: engine.lastNotice)
+        }
+        .onChange(of: engine.lastError) {
+            MessageLog.shared.absorb(error: engine.lastError, notice: engine.lastNotice)
+        }
+        .onChange(of: engine.lastNotice) {
+            MessageLog.shared.absorb(error: engine.lastError, notice: engine.lastNotice)
+        }
+    }
+}
+
+/// The message log, rendered. Shared by the popover and Settings so an error
+/// raised in one is dismissible in the other.
+struct MessageStrip: View {
+    @ObservedObject var log: MessageLog
+    var horizontalPadding: CGFloat
+    /// Settings can accumulate several at once across its tabs; the popover
+    /// rarely shows more than one.
+    var showsDismissAll = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(log.messages) { message in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: message.kind == .error
+                          ? "exclamationmark.triangle.fill" : "info.circle")
+                        .foregroundStyle(message.kind == .error ? Color.orange : Color.secondary)
+                        .font(.caption)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(message.text)
+                            .font(.caption)
+                            .foregroundStyle(message.kind == .error ? Color.primary : Color.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        // Relative age: this panel is transient, and "4m ago"
+                        // is what tells you whether it described what you just
+                        // did or something from before you opened the window.
+                        Text("\(Fmt.duration(Date().timeIntervalSince(message.at))) ago")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    Spacer(minLength: 4)
+                    Button { log.dismiss(message.id) } label: {
+                        Image(systemName: "xmark").font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Dismiss")
+                }
+            }
+            if showsDismissAll, log.messages.count > 1 {
+                Button("Dismiss all") { log.dismissAll() }
+                    .buttonStyle(.borderless).controlSize(.small)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, horizontalPadding).padding(.vertical, 7)
     }
 }
 
@@ -319,6 +571,8 @@ struct SectionHeader: View {
             .font(.caption2).bold()
             .foregroundStyle(.secondary)
             .kerning(0.6)
+            // Lets the VoiceOver rotor jump Usage → Sessions → Hibernated.
+            .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -470,6 +724,12 @@ struct ProjectGroupView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                // Three unlabelled children otherwise: VoiceOver read a chevron
+                // glyph name, the folder, and a bare count with no relation.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(group.name), \(counts), \(Fmt.bytes(group.totalFootprint))")
+                .accessibilityHint(collapsed ? "Shows the sessions in this project" : "Hides them")
+                .accessibilityAddTraits(.isButton)
 
                 Spacer(minLength: 4)
 
@@ -586,6 +846,25 @@ struct SessionRow: View {
         return status
     }
 
+    /// What Claude Code reports about this session's context window and cost.
+    private var usage: SessionUsage? { engine.sessionUsage[session.sessionId] }
+
+    /// Context occupancy, but only once it is worth acting on. Below this the
+    /// number is in the expanded detail; above it, the conversation is close to
+    /// being compacted, which is the one context fact a collapsed row can use.
+    private var contextPressure: Double? {
+        guard let percent = usage?.contextUsedPercentage, percent >= 70 else { return nil }
+        return percent
+    }
+
+    private var contextSummary: String? {
+        guard let percent = usage?.contextUsedPercentage else { return nil }
+        guard let resident = usage?.contextTokens, let size = usage?.contextWindowSize, size > 0 else {
+            return "\(Int(percent))% full"
+        }
+        return "\(Int(percent))% full · \(Fmt.tokens(resident)) of \(Fmt.tokens(size))"
+    }
+
     /// Registry names look like `<project>-<suffix>`; inside a group the
     /// project part is already in the header, so only the suffix is shown.
     private var title: String {
@@ -623,6 +902,14 @@ struct SessionRow: View {
 
                     Spacer(minLength: 4)
 
+                    if let percent = contextPressure {
+                        Text("ctx \(Int(percent))%")
+                            .font(.system(size: 9))
+                            .foregroundStyle(percent >= 90 ? Color.red : Color.orange)
+                            .monospacedDigit()
+                            .help("Context window \(Int(percent))% full. Claude Code compacts the conversation when it fills, which costs a pause and some of the earlier detail.")
+                    }
+
                     if session.childCount > 0 {
                         Text("\(session.childCount) MCP")
                             .font(.system(size: 9))
@@ -644,6 +931,16 @@ struct SessionRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // Six unlabelled children otherwise, read as six separate items
+            // with no hint that the actions live behind the row.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(title), \(statusText), \(Fmt.bytes(session.totalFootprint))"
+                                + (contextPressure.map { ", context \(Int($0)) percent full" } ?? "")
+                                + (session.childCount > 0 ? ", \(session.childCount) MCP servers" : ""))
+            .accessibilityHint(expanded
+                               ? "Hides this session's actions"
+                               : "Shows Freeze, Hibernate and Reveal in Finder")
+            .accessibilityAddTraits(.isButton)
 
             if expanded {
                 detail
@@ -668,6 +965,21 @@ struct SessionRow: View {
                         DetailRow("Models", tokens.models.sorted().joined(separator: ", "))
                     }
                 }
+                // Claude Code's own figures, not Torpor's arithmetic, so they
+                // are stated plainly — no tilde, no "about".
+                if let cost = usage?.costUSD, cost > 0 {
+                    DetailRow("Cost", "$\(String(format: "%.2f", cost))")
+                }
+                if let context = contextSummary {
+                    DetailRow("Context", context)
+                }
+            }
+
+            if let percent = usage?.contextUsedPercentage, percent >= 80 {
+                Text("Close to the context limit. Claude Code compacts the conversation when it fills — the session keeps going, but it pauses to do it and some earlier detail is summarised away.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Text(session.isFrozen

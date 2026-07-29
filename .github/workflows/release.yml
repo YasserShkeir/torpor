@@ -21,10 +21,18 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           V="${TAG#v}"
           PLIST=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Resources/Info.plist)
           # The tag and Info.plist must agree, or Sparkle offers an update that
           # reports the old version once installed and offers itself forever.
           if [ "$V" != "$PLIST" ]; then
             echo "::error::tag $TAG says $V but Info.plist says $PLIST"
+            exit 1
+          fi
+          # Sparkle compares CFBundleVersion, not the short string, against
+          # sparkle:version, so a plist that only bumps the short string ships a
+          # build that is never offered an update.
+          if [ "$V" != "$BUILD" ]; then
+            echo "::error::tag $TAG says $V but CFBundleVersion is $BUILD"
             exit 1
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
@@ -53,6 +61,28 @@ jobs:
           echo "zip=dist/Torpor-$V.zip" >> "$GITHUB_OUTPUT"
           echo "sha256=$(cut -d' ' -f1 < "dist/Torpor-$V.zip.sha256")" >> "$GITHUB_OUTPUT"
 
+      - name: Verify the packaged app
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Verify the copy that ships, not the one on disk: ditto is what
+          # rewrote the bundle, and nothing else in this pipeline opens the zip
+          # again before a user does.
+          rm -rf verify && mkdir verify
+          ditto -x -k "dist/Torpor-$V.zip" verify
+          codesign --verify --deep --strict verify/Torpor.app
+          for key in CFBundleShortVersionString CFBundleVersion; do
+            GOT=$(/usr/libexec/PlistBuddy -c "Print :$key" verify/Torpor.app/Contents/Info.plist)
+            if [ "$GOT" != "$V" ]; then
+              echo "::error::packaged $key is $GOT, expected $V"
+              exit 1
+            fi
+          done
+          # An app that cannot print its own version is not worth signing an
+          # appcast for.
+          verify/Torpor.app/Contents/MacOS/Torpor --version
+
       # Not notarisation and not a Gatekeeper substitute, but real supply-chain
       # evidence: anyone can verify this exact file came out of this workflow.
       - name: Attest build provenance
@@ -60,15 +90,18 @@ jobs:
         with:
           subject-path: ${{ steps.pkg.outputs.zip }}
 
-      - name: Publish the release
+      - name: Create the release (draft)
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.v.outputs.version }}
           TAG: ${{ steps.v.outputs.tag }}
         run: |
+          # Draft until the appcast has landed. Publishing first means a failed
+          # appcast push leaves a public release that no installed copy is ever
+          # offered — the same reasoning that already puts the cask bump last.
           gh release create "$TAG" \
             "dist/Torpor-$V.zip" "dist/Torpor-$V.zip.sha256" \
-            --title "Torpor $V" --generate-notes --latest
+            --title "Torpor $V" --generate-notes --draft
 
       - name: Sign the archive and publish the appcast
         env:
@@ -78,27 +111,66 @@ jobs:
           TAG: ${{ steps.v.outputs.tag }}
         run: |
           set -euo pipefail
+          [ -n "${SPARKLE_ED_KEY:-}" ] || { echo "::error::SPARKLE_ED_KEY is not set — the appcast cannot be signed"; exit 1; }
           echo "::add-mask::$SPARKLE_ED_KEY"
-          SIGN=$(find .build -name sign_update -type f | head -1)
+          SIGN=$(find .build/artifacts -name sign_update -type f -not -path "*old_dsa*" | head -1)
+          # An empty result would run the empty string and report "command not
+          # found", which reads as a broken runner rather than a missing tool.
+          [ -x "$SIGN" ] || { echo "::error::Sparkle's sign_update not found — did the build resolve Sparkle?"; exit 1; }
           # --ed-key-file - reads from stdin, so the key never lands in argv
           # or on disk.
           SIG=$(printf '%s' "$SPARKLE_ED_KEY" | "$SIGN" "dist/Torpor-$V.zip" --ed-key-file -)
+          # The signing key and the key baked into the app are the entire trust
+          # anchor. If they have drifted, every user's update fails signature
+          # validation at install time, after the download — check it here,
+          # where it is a red workflow instead.
+          cat > "$RUNNER_TEMP/ed-public-key.swift" <<'SWIFT'
+          import CryptoKit
+          import Foundation
+          guard let key = Data(base64Encoded: readLine(strippingNewline: true) ?? "") else {
+              fputs("SPARKLE_ED_KEY is not base64\n", stderr)
+              exit(1)
+          }
+          // Older Sparkle keys are seed+public; newer ones are the 32-byte seed.
+          print(try! Curve25519.Signing.PrivateKey(rawRepresentation: Data(key.prefix(32)))
+                  .publicKey.rawRepresentation.base64EncodedString())
+          SWIFT
+          DERIVED=$(printf '%s\n' "$SPARKLE_ED_KEY" | swift "$RUNNER_TEMP/ed-public-key.swift")
+          BAKED=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" verify/Torpor.app/Contents/Info.plist)
+          if [ "$DERIVED" != "$BAKED" ]; then
+            echo "::error::SPARKLE_ED_KEY does not match SUPublicEDKey in the packaged app"
+            exit 1
+          fi
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/Torpor-$V.zip"
 
           # This job is checked out at a tag; the appcast has to land on the
-          # branch GitHub Pages serves.
-          git clone --depth 1 --branch main \
+          # branch GitHub Pages serves. Not shallow — a rebase below needs a
+          # merge base.
+          git clone --branch main \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main-checkout
           ./scripts/appcast-insert.py "$V" "$TAG" "$URL" "$SIG" main-checkout/docs/appcast.xml
           cd main-checkout
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "appcast: $V"
-          git push
+          # Any push to main between the clone and here loses the race, and the
+          # feed is the only thing that makes a release reachable — rebase onto
+          # whatever landed and try again.
+          pushed=""
+          for _ in 1 2 3; do
+            if git push; then pushed=1; break; fi
+            git pull --rebase origin main
+          done
+          [ -n "$pushed" ] || { echo "::error::could not push the appcast — re-run this job"; exit 1; }
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --latest
 
       # Last, so nobody can tap a cask whose download 404s.
       - name: Bump the Homebrew cask
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
           V: ${{ steps.v.outputs.version }}

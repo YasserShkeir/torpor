@@ -23,6 +23,7 @@ enum SessionControl {
     enum ControlError: LocalizedError {
         case signalFailed(pid: Int32, signal: Int32, errno: Int32)
         case noArguments(pid: Int32)
+        case unreplayableFlags(pid: Int32, flags: [String])
         case terminateTimedOut(pid: Int32)
         case launchFailed(String)
 
@@ -32,6 +33,10 @@ enum SessionControl {
                 return "Signal \(sig) to pid \(pid) failed: \(String(cString: strerror(err)))"
             case let .noArguments(pid):
                 return "Could not read the command line of pid \(pid); refusing to hibernate a session we cannot restore."
+            // Names the flags and never their values: the values are the secret,
+            // and this string reaches lastError, notifications and stderr.
+            case let .unreplayableFlags(pid, flags):
+                return "pid \(pid) passes \(flags.joined(separator: ", ")) in a form Torpor will not store — inline JSON, which routinely carries API keys, or a value it cannot replay exactly. Reviving without it would silently lose that configuration, so the session is left running. Pass a file path instead to make it hibernatable."
             case let .terminateTimedOut(pid):
                 return "Session \(pid) did not exit after SIGTERM."
             case let .launchFailed(message):
@@ -48,25 +53,76 @@ enum SessionControl {
     /// or reap work while its descendants are being suspended; on resume the
     /// order is inverted so the parent is scheduling again before its MCP
     /// servers start producing output.
-    static func freeze(pid: Int32) throws {
+    static func freeze(pid: Int32, store: FrozenStore) throws {
         let tree = subtree(of: pid)
+        // Written before we signal. After SIGSTOP the parent can still die, and
+        // its stopped children are then reparented to launchd where nothing in
+        // the session list can name them again.
+        if let snap = ProcProbe.snapshot(pid) {
+            let children = tree.compactMap { child in
+                ProcProbe.snapshot(child).map { FrozenChild(pid: child, startedAt: $0.startTime) }
+            }
+            // Best-effort: failing to record must not stop the user freezing.
+            try? store.add(FrozenSubtree(pid: pid, startedAt: snap.startTime,
+                                         name: snap.command, children: children,
+                                         frozenAt: Date()))
+        }
         // Best-effort on children: a process that exits mid-loop must not stop
         // us stopping the rest, or the tree is left half-frozen.
         for child in tree.reversed() { try? signal(child, SIGSTOP) }   // deepest first
         try signal(pid, SIGSTOP)
     }
 
-    static func thaw(pid: Int32) throws {
+    static func thaw(pid: Int32, store: FrozenStore) throws {
         // Parent first so it is scheduling again before its MCP servers resume
         // producing output — but children are resumed regardless of what the
         // parent's signal did, because leaving them stopped is unrecoverable
         // from the UI once the parent is gone.
-        defer { for child in subtree(of: pid) { try? signal(child, SIGCONT) } }
+        defer {
+            for child in subtree(of: pid) { try? signal(child, SIGCONT) }
+            // A child reparented away from the session is no longer in its
+            // subtree, so resume the recorded ones too — start time checked,
+            // since a PID we wrote down may since have been recycled.
+            for child in store.record(pid: pid)?.children ?? []
+            where isStillSameProcess(pid: child.pid, startedAt: child.startedAt) {
+                try? signal(child.pid, SIGCONT)
+            }
+            try? store.remove(pid: pid)
+        }
         try signal(pid, SIGCONT)
     }
 
-    static func freeze(session: Session) throws { try freeze(pid: session.pid) }
-    static func thaw(session: Session) throws { try thaw(pid: session.pid) }
+    static func freeze(session: Session, store: FrozenStore) throws {
+        try freeze(pid: session.pid, store: store)
+    }
+    static func thaw(session: Session, store: FrozenStore) throws {
+        try thaw(pid: session.pid, store: store)
+    }
+
+    /// Resume and end frozen subtrees whose session has since died.
+    ///
+    /// A SIGSTOPped MCP server whose parent is gone is reparented to launchd:
+    /// nothing in the session list refers to it, `isFrozen` cannot show it, and
+    /// it holds its whole footprint forever. There is no button that could reach
+    /// it, so this runs from the poll instead.
+    static func sweepFrozen(store: FrozenStore) {
+        // Reloaded first: this file is written by separate `Torpor --freeze`
+        // processes and read by a long-lived GUI, so a store left at whatever it
+        // held on launch would both miss their records and overwrite them.
+        store.reload()
+        for record in store.records {
+            guard !isStillSameProcess(pid: record.pid, startedAt: record.startedAt) else { continue }
+            for child in record.children
+            where isStillSameProcess(pid: child.pid, startedAt: child.startedAt)
+                && isStopped(child.pid)
+                && ProcProbe.snapshot(child.pid)?.ppid == 1 {
+                // SIGCONT first: a stopped process never acts on SIGTERM.
+                try? signal(child.pid, SIGCONT)
+                try? signal(child.pid, SIGTERM)
+            }
+            try? store.remove(pid: record.pid)
+        }
+    }
 
     /// Whether a process is currently stopped (`SIDL`/`SSTOP` in the BSD info).
     static func isStopped(_ pid: Int32) -> Bool {
@@ -91,25 +147,37 @@ enum SessionControl {
 
     // MARK: - Hibernate
 
-    /// Capture everything needed to restore the session, then end it.
+    /// Capture argv and persist a restore record, without signalling anything.
     ///
     /// We read argv *before* signalling, because once the process is gone the
     /// kernel no longer has its arguments and the session becomes unrestorable.
     /// If argv cannot be read we refuse rather than terminate something we
-    /// cannot bring back.
-    /// Capture argv and persist a restore record, without signalling anything.
-    /// Split out so a batch can capture every session before terminating any of
-    /// them — once a process is gone the kernel no longer has its arguments.
+    /// cannot bring back. Split out so a batch can capture every session before
+    /// terminating any of them.
     static func prepare(session: Session, store: HibernationStore) throws -> HibernatedSession {
-        guard let argv = ProcProbe.arguments(session.pid), let executable = argv.first else {
+        guard let captured = ProcProbe.arguments(session.pid),
+              let executable = captured.argv.first else {
             throw ControlError.noArguments(pid: session.pid)
+        }
+        // Filtered here rather than only at replay time: the record is written
+        // to disk and kept indefinitely, and an inline --mcp-config carries the
+        // credentials of every server it starts.
+        let (replayable, refused) = HibernatedSession.replayable(
+            from: Array(captured.argv.dropFirst()))
+        // Refuse rather than degrade, exactly as an unreadable argv is refused.
+        // We will not store the blob, and reviving without it would bring the
+        // session back missing servers and directories it was started with,
+        // silently.
+        guard refused.isEmpty else {
+            throw ControlError.unreplayableFlags(pid: session.pid, flags: refused)
         }
         let record = HibernatedSession(
             sessionId: session.sessionId,
             cwd: session.cwd,
             name: session.name,
             executable: executable,
-            arguments: Array(argv.dropFirst()),
+            executablePath: captured.executablePath,
+            arguments: replayable,
             hibernatedAt: Date(),
             reclaimedBytes: session.totalFootprint,
             version: session.version,
@@ -117,9 +185,40 @@ enum SessionControl {
             tty: ProcProbe.tty(session.pid)
         )
         // Persist before signalling: a crash between the two should leave a
-        // recoverable record, not an orphaned session we've forgotten.
-        store.add(record)
+        // recoverable record, not an orphaned session we've forgotten. A failed
+        // write aborts the hibernate — this record is the only copy of the argv
+        // a revive needs, so terminating without it would be unrecoverable.
+        try store.add(record)
         return record
+    }
+
+    /// A session captured and ready to signal, with the identity every later
+    /// liveness check compares against.
+    private struct Prepared {
+        var session: Session
+        var record: HibernatedSession
+        var startedAt: Date
+        var descendants: [Int32: Date]
+    }
+
+    private static func capture(session: Session, store: HibernationStore) throws -> Prepared {
+        let record = try prepare(session: session, store: store)
+        // Recorded before we signal, so cleanup afterwards is scoped to exactly
+        // the processes we orphaned. Scanning for reparented helpers globally
+        // instead risks killing an unrelated session's MCP server. Keyed by
+        // start time as well as PID, because the kernel can recycle a PID
+        // between the parent dying and the cleanup scan.
+        var descendants: [Int32: Date] = [:]
+        for child in subtree(of: session.pid) {
+            if let snap = ProcProbe.snapshot(child) { descendants[child] = snap.startTime }
+        }
+        return Prepared(session: session,
+                        record: record,
+                        // Identity captured before signalling, so every later
+                        // liveness check compares against the process we
+                        // actually targeted.
+                        startedAt: ProcProbe.snapshot(session.pid)?.startTime ?? session.startedAt,
+                        descendants: descendants)
     }
 
     /// Hibernate several sessions at once.
@@ -128,55 +227,22 @@ enum SessionControl {
     /// six-second grace period per session — hibernating a four-session project
     /// group otherwise takes half a minute with the UI wedged behind it.
     /// Async throughout so the wait yields the main actor instead of blocking it.
+    ///
+    /// Capture failures are returned rather than dropped: a session refused for
+    /// an inline `--mcp-config` needs to say so, and this is the entry point the
+    /// GUI Hibernate button uses. Counting the survivors instead reports every
+    /// refusal as "its command line could not be read", which for that session
+    /// is untrue.
     @discardableResult
-    static func hibernate(sessions: [Session], store: HibernationStore) async -> [HibernatedSession] {
-        var prepared: [(Session, HibernatedSession, [Int32: Date])] = []
-
+    static func hibernate(sessions: [Session], store: HibernationStore)
+        async -> (records: [HibernatedSession], failures: [(session: Session, error: Error)]) {
+        var prepared: [Prepared] = []
+        var failures: [(session: Session, error: Error)] = []
         for session in sessions {
-            guard let record = try? prepare(session: session, store: store) else { continue }
-            var descendants: [Int32: Date] = [:]
-            for child in subtree(of: session.pid) {
-                if let snap = ProcProbe.snapshot(child) { descendants[child] = snap.startTime }
-            }
-            prepared.append((session, record, descendants))
+            do { prepared.append(try capture(session: session, store: store)) }
+            catch { failures.append((session, error)) }
         }
-        guard !prepared.isEmpty else { return [] }
-
-        // Identity captured before signalling, so every later liveness check
-        // compares against the process we actually targeted.
-        var identities: [Int32: Date] = [:]
-        for (session, _, _) in prepared {
-            identities[session.pid] = ProcProbe.snapshot(session.pid)?.startTime ?? session.startedAt
-        }
-        let targets = prepared.map { (pid: $0.0.pid, startedAt: identities[$0.0.pid] ?? Date()) }
-
-        for (session, _, _) in prepared {
-            if isStopped(session.pid) { try? thaw(session: session) }
-            try? signal(session.pid, SIGTERM)
-        }
-
-        await waitForExit(targets, timeout: 6)
-
-        for target in targets where isStillSameProcess(pid: target.pid, startedAt: target.startedAt) {
-            try? signal(target.pid, SIGKILL)
-        }
-        await waitForExit(targets, timeout: 3)
-
-        // Report only what actually died, and roll back the record for anything
-        // that survived — otherwise a session appears in the live list and the
-        // Hibernated list at once, with a Revive button that would start a
-        // second process against the same transcript.
-        var succeeded: [HibernatedSession] = []
-        for (index, (session, record, descendants)) in prepared.enumerated() {
-            let target = targets[index]
-            if isStillSameProcess(pid: target.pid, startedAt: target.startedAt) {
-                store.remove(sessionId: session.sessionId)
-                continue
-            }
-            reapOrphans(ourDescendants: descendants)
-            succeeded.append(record)
-        }
-        return succeeded
+        return (await terminate(prepared, store: store), failures)
     }
 
     /// True only if this pid still holds *the same* process we started with.
@@ -205,68 +271,66 @@ enum SessionControl {
         }
     }
 
+    /// Hibernate one session, reporting *why* it failed.
+    ///
+    /// Deliberately not its own implementation. The batch path is the one that
+    /// verifies process identity by start time and excludes zombies, and it
+    /// waits by yielding rather than by `usleep` on the caller's thread — which
+    /// for auto-hibernate is the main actor.
     @discardableResult
-    static func hibernate(session: Session, store: HibernationStore) throws -> HibernatedSession {
-        guard let argv = ProcProbe.arguments(session.pid), let executable = argv.first else {
-            throw ControlError.noArguments(pid: session.pid)
+    static func hibernate(session: Session, store: HibernationStore) async throws -> HibernatedSession {
+        let prepared = try capture(session: session, store: store)
+        guard let record = await terminate([prepared], store: store).first else {
+            throw ControlError.terminateTimedOut(pid: session.pid)
         }
+        return record
+    }
 
-        // Record this session's own descendants before we signal, so cleanup
-        // afterwards can be scoped to exactly the processes we orphaned. Doing
-        // it the other way round — scanning for reparented helpers globally —
-        // risks killing an unrelated session's MCP server.
-        // Keyed by start time as well as PID: between the parent dying and the
-        // cleanup scan, the kernel could recycle a PID onto a new process.
-        var ownDescendants: [Int32: Date] = [:]
-        for child in subtree(of: session.pid) {
-            if let snap = ProcProbe.snapshot(child) { ownDescendants[child] = snap.startTime }
+    private static func terminate(_ prepared: [Prepared],
+                                  store: HibernationStore) async -> [HibernatedSession] {
+        guard !prepared.isEmpty else { return [] }
+        let targets = prepared.map { (pid: $0.session.pid, startedAt: $0.startedAt) }
+
+        for item in prepared {
+            // A frozen process will not act on SIGTERM, so wake it first — and
+            // its recorded subtree with it. Resuming only the parent leaves its
+            // SIGSTOPped MCP children to outlive it, still stopped, reparented
+            // to launchd where nothing can reach them and where the SIGTERM
+            // below would be equally ignored.
+            if isStopped(item.session.pid) {
+                for (pid, startedAt) in item.descendants
+                where isStillSameProcess(pid: pid, startedAt: startedAt) {
+                    try? signal(pid, SIGCONT)
+                }
+                try? signal(item.session.pid, SIGCONT)
+            }
+            try? signal(item.session.pid, SIGTERM)
         }
-
-        let record = HibernatedSession(
-            sessionId: session.sessionId,
-            cwd: session.cwd,
-            name: session.name,
-            executable: executable,
-            arguments: Array(argv.dropFirst()),
-            hibernatedAt: Date(),
-            reclaimedBytes: session.totalFootprint,
-            version: session.version,
-            entrypoint: session.entrypoint,
-            tty: ProcProbe.tty(session.pid)
-        )
-        // Persist before signalling: a crash between the two should leave a
-        // recoverable record, not an orphaned session we've forgotten.
-        store.add(record)
-
-        // A frozen process will not act on SIGTERM, so wake it first.
-        if isStopped(session.pid) { try? thaw(session: session) }
-
-        try signal(session.pid, SIGTERM)
 
         // Give Claude Code a moment to flush its transcript and shut its MCP
         // children down cleanly. Only escalate if it refuses.
-        let deadline = Date().addingTimeInterval(6)
-        while Date() < deadline {
-            if !ProcProbe.isAlive(session.pid) { break }
-            usleep(150_000)
+        await waitForExit(targets, timeout: 6)
+        for target in targets where isStillSameProcess(pid: target.pid, startedAt: target.startedAt) {
+            try? signal(target.pid, SIGKILL)
         }
+        await waitForExit(targets, timeout: 3)
 
-        if ProcProbe.isAlive(session.pid) {
-            try signal(session.pid, SIGKILL)
-            let hardDeadline = Date().addingTimeInterval(3)
-            while Date() < hardDeadline, ProcProbe.isAlive(session.pid) {
-                usleep(150_000)
+        // Report only what actually died, and roll back the record for anything
+        // that survived — otherwise a session appears in the live list and the
+        // Hibernated list at once, with a Revive button that would start a
+        // second process against the same transcript.
+        var succeeded: [HibernatedSession] = []
+        for (index, item) in prepared.enumerated() {
+            if isStillSameProcess(pid: targets[index].pid, startedAt: targets[index].startedAt) {
+                try? store.remove(sessionId: item.session.sessionId)
+                continue
             }
-            if ProcProbe.isAlive(session.pid) {
-                throw ControlError.terminateTimedOut(pid: session.pid)
-            }
+            // MCP servers are children of the session and normally exit with it.
+            // Anything from *this* session still standing is an orphan we made.
+            reapOrphans(ourDescendants: item.descendants)
+            succeeded.append(item.record)
         }
-
-        // MCP servers are children of the session and normally exit with it.
-        // Anything from *this* session still standing is an orphan we made.
-        reapOrphans(ourDescendants: ownDescendants)
-
-        return record
+        return succeeded
     }
 
     /// Terminate the session's own descendants if they outlived it.
@@ -281,6 +345,10 @@ enum SessionControl {
             // Same PID *and* same start time, or it is a different process.
             guard abs(snap.startTime.timeIntervalSince(startedAt)) < 1 else { continue }
             guard snap.ppid == 1 else { continue }
+            // SIGCONT first: a stopped process never acts on SIGTERM, so a child
+            // we froze would be signalled here and simply stay put, holding its
+            // whole footprint with nothing left on screen referring to it.
+            _ = try? signal(pid, SIGCONT)
             _ = try? signal(pid, SIGTERM)
         }
     }
@@ -383,7 +451,9 @@ enum SessionControl {
         // Prefer the tab the session died in. Only its own shell may still be
         // sitting on that tty, so a match is unambiguous.
         if let tty = record.tty, let app = reviveInOriginalTab(command: command, tty: tty) {
-            store.markReviving(sessionId: record.sessionId)
+            // `revivingSince` is advisory bookkeeping, so a failed write must not
+            // fail a revive that has already opened a terminal.
+            try? store.markReviving(sessionId: record.sessionId)
             return .originalTab(app: app)
         }
         try launch(command: command, terminal: terminal)
@@ -393,7 +463,7 @@ enum SessionControl {
         // the record now would destroy the only copy of the captured argv on a
         // revive that printed "command not found". Engine clears it once a live
         // session with this id appears in the registry.
-        store.markReviving(sessionId: record.sessionId)
+        try? store.markReviving(sessionId: record.sessionId)
         return .newWindow(app: terminal)
     }
 

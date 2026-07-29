@@ -70,7 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func redrawStatusItem() {
         guard let button = statusItem.button else { return }
-        let input = engine.menuBarInput
+        var input = engine.menuBarInput
+        // Resolve colours in the menu bar's appearance rather than the app's:
+        // dynamic NSColors bake in whatever is current when the image draws,
+        // and the menu bar is dark over a dark wallpaper even in Light Mode.
+        input.appearance = button.effectiveAppearance
 
         // With nothing running there is nothing worth a slot in the menu bar,
         // so the item disappears entirely. Re-launching Torpor (or opening it
@@ -83,32 +87,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.isVisible = !mayHide || !idle || revealedWhileIdle
         if !idle { revealedWhileIdle = false }
 
-        button.image = MenuBarRenderer.image(input)   // nil for text-only styles
+        // The first column — bar (or level) above the time remaining — is the
+        // image; the memory figure is the title, which the button centres
+        // against the whole image. That is the two-column layout: nothing else
+        // is needed, because a status item button lays out exactly one image
+        // and one title. Both styles now draw an image, so there is no longer a
+        // case where the item can come out zero-width: the Percentage style
+        // draws "—" rather than nothing when there is no reading.
+        button.image = MenuBarRenderer.image(input)
         button.imagePosition = .imageLeading
-        // Attributed rather than plain, so the number carries the same
-        // green/amber/red signal as the gauge. In monochrome mode this
-        // resolves to labelColor and the menu bar tints it as usual.
-        // Percentage style draws no image, and the title is empty until usage
-        // data arrives — which together produced a status item of zero width,
-        // indistinguishable from the app having failed to launch.
-        var titleText = MenuBarRenderer.title(input)
-        if button.image == nil, titleText.isEmpty { titleText = " —" }
-        button.attributedTitle = NSAttributedString(
-            string: titleText,
-            attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: MenuBarRenderer.titleColor(input),
-            ])
+        // The run carries its own colour, because the memory figure is a
+        // different quantity from the level and says so in green or orange.
+        // Monochrome deliberately sets none: NSStatusBarButton tints its own
+        // title and inverts it while the item is highlighted, and an explicit
+        // labelColor defeated both, leaving the number dark on the highlighted
+        // background with the popover open. The colour modes pay that price
+        // knowingly — the colour is the whole point of them.
+        button.attributedTitle = MenuBarRenderer.attributedTitle(input)
 
         let count = engine.sessions.count
         var tooltip = count == 0
             ? "No Claude Code sessions"
             : "\(count) session\(count == 1 ? "" : "s") · \(Fmt.bytes(engine.totalFootprint))"
+        // The exact level. The bar carries it as a fill and nothing else does
+        // now that the trailing text is the memory figure, so without this line
+        // a `.bar` user cannot read their percentage without opening the panel.
+        if let percent = input.percentText {
+            tooltip += "\n\(engine.preferences.menuBarMetric.label): \(percent) used"
+        }
         // Name what the gauge is a proportion of — a bar with no label is
-        // otherwise just a rectangle.
+        // otherwise just a rectangle — what the white line across it means, and
+        // what the number beside it is, since those are two unrelated
+        // quantities in one item and only the colour distinguishes them.
         tooltip += "\n" + engine.preferences.menuBarMetric.gaugeMeaning
-        if let quota = engine.quota, let week = quota.sevenDay {
-            tooltip += "\nWeek \(Int(week.usedPercentage))% used"
+        if input.showsTimeMarker {
+            tooltip += "\n" + engine.preferences.menuBarMetric.markerMeaning
+        }
+        // The second row is a duration and nothing says what it counts down to,
+        // so the tooltip has to.
+        if let remaining = MenuBarRenderer.durationText(input) {
+            tooltip += "\nThe figure under the bar is how long is left: this window resets in \(remaining)."
+        }
+        if input.memoryText != nil {
+            tooltip += "\n" + engine.preferences.memoryFigure.meaning
+        }
+        if let quota = engine.quota {
+            // A dimmed bar has to say why, or it just looks like a rendering
+            // bug: nothing has measured this since the timestamp shown.
+            if input.isUnverified {
+                tooltip += "\nLast read \(Fmt.duration(quota.age)) ago — dimmed until a session refreshes it"
+            }
+            // Whichever window the bar is *not* drawing, so one hover still
+            // recovers both. Naming it after the metric line above would have
+            // printed the weekly figure twice for a weekly bar.
+            switch engine.preferences.menuBarMetric {
+            case .fiveHour:
+                if let week = quota.sevenDay {
+                    tooltip += "\nWeekly limit: \(Int(week.usedPercentage))% used"
+                }
+            case .sevenDay:
+                if let five = quota.fiveHour {
+                    tooltip += "\n5-hour limit: \(Int(five.usedPercentage))% used"
+                }
+            }
         }
         button.toolTip = tooltip
 

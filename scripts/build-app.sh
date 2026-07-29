@@ -31,9 +31,9 @@ cp "$BIN" "$APP/Contents/MacOS/Torpor"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-# One version number to bump per release: CFBundleVersion is what Sparkle
-# compares, and deriving it here means it can never drift from the one in
-# Resources/Info.plist.
+# CFBundleVersion is what Sparkle compares, so Resources/Info.plist carries the
+# real value and this only re-asserts it — a bundle can never ship with the two
+# out of step, and one built by any other path is still correct.
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
 
 if [ -f "$ROOT/Resources/AppIcon.icns" ]; then
