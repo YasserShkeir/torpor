@@ -403,6 +403,11 @@ actor TranscriptScanner {
     /// state — after which the next poll re-read every subagent file from byte
     /// zero, forever.
     func prune(keeping live: Set<String>) {
+        // An empty set is far more often a failed registry read than a machine
+        // with nothing running — `registryLooksBroken` exists because that read
+        // can fail — and `allSatisfy` is vacuously true on it, so without this
+        // the guard below waves through an empty keep-set and drops everything.
+        guard !live.isEmpty else { return }
         pathsBySession = pathsBySession.filter { live.contains($0.key) }
         // A pass that did not visit every live session has an incomplete
         // keep-set, and pruning against it would drop offsets we are about to
