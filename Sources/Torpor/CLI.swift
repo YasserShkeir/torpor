@@ -11,7 +11,10 @@ enum CLI {
     /// Column padding. Deliberately not `String(format:)` — `%s` there expects
     /// a C string, and handing it a Swift String segfaults.
     private static func pad(_ s: String, _ width: Int, right: Bool = false) -> String {
-        if s.count >= width { return s + " " }
+        // Truncate rather than overflow: one over-wide cell — a status value
+        // added upstream, say `compacting` — otherwise shifts every later
+        // column on that row and only that row, which reads as corrupt output.
+        guard s.count < width else { return String(s.prefix(max(0, width - 1))) + " " }
         let fill = String(repeating: " ", count: width - s.count)
         return right ? fill + s : s + fill
     }
@@ -157,12 +160,13 @@ enum CLI {
             guard let raw = arguments.dropFirst(2).first, let pid = Int32(raw) else {
                 fail("\(command) needs a pid")
             }
+            let frozen = FrozenStore()
             do {
                 if command == "--freeze" {
-                    try SessionControl.freeze(pid: pid)
+                    try SessionControl.freeze(pid: pid, store: frozen)
                     print("Froze \(pid) and its subtree. CPU stops; memory is unchanged.")
                 } else {
-                    try SessionControl.thaw(pid: pid)
+                    try SessionControl.thaw(pid: pid, store: frozen)
                     print("Thawed \(pid).")
                 }
             } catch { fail(error.localizedDescription) }
@@ -176,19 +180,33 @@ enum CLI {
             guard let session = SessionRegistry.load().first(where: { $0.pid == pid }) else {
                 fail("pid \(pid) is not a known Claude Code session")
             }
-            guard let argv = ProcProbe.arguments(pid), let executable = argv.first else {
+            guard let captured = ProcProbe.arguments(pid),
+                  let executable = captured.argv.first else {
                 fail("could not read argv for \(pid) — hibernate would refuse")
             }
+            // Same filter hibernate applies before writing the record, so the
+            // preview describes the record that would actually be stored —
+            // including the refusal. Without this, --preview cheerfully
+            // described a hibernate that --hibernate then declined.
+            let (replayable, refused) = HibernatedSession.replayable(
+                from: Array(captured.argv.dropFirst()))
+            let tty = ProcProbe.tty(pid)
             let record = HibernatedSession(
                 sessionId: session.sessionId, cwd: session.cwd, name: session.name,
-                executable: executable, arguments: Array(argv.dropFirst()),
+                executable: executable, executablePath: captured.executablePath,
+                arguments: replayable,
                 hibernatedAt: Date(), reclaimedBytes: session.totalFootprint,
-                version: session.version, entrypoint: session.entrypoint)
+                version: session.version, entrypoint: session.entrypoint, tty: tty)
             print("session:   \(session.projectName) (\(session.sessionId))")
             print("would free: \(Fmt.bytes(session.totalFootprint)) across \(session.childCount + 1) processes")
-            print("argv seen:  \(argv.count - 1) flags")
-            print("replaying:  \(record.replayableFlags().isEmpty ? "(none)" : record.replayableFlags().joined(separator: " "))")
-            let tty = ProcProbe.tty(pid)
+            print("argv seen:  \(captured.argv.count - 1) flags")
+            print("replaying:  \(replayable.isEmpty ? "(none)" : replayable.joined(separator: " "))")
+            if !refused.isEmpty {
+                // Only the flag names — the values are the reason they are
+                // refused (an inline --mcp-config carries its servers' secrets).
+                print("refusing:   \(refused.joined(separator: " ")) — carries an inline value Torpor will not store")
+                print("hibernate would refuse this session; nothing would be terminated.")
+            }
             print("terminal:  " + (tty.map { "\($0) — revive returns to this tab if it is still open" }
                                    ?? "no tty (VS Code-hosted) — revive opens a new window"))
             print("revive runs:")
@@ -201,12 +219,26 @@ enum CLI {
             guard let session = SessionRegistry.load().first(where: { $0.pid == pid }) else {
                 fail("pid \(pid) is not a known Claude Code session")
             }
-            do {
-                let record = try SessionControl.hibernate(session: session,
-                                                          store: HibernationStore())
-                print("Hibernated \(record.name), reclaimed \(Fmt.bytes(record.reclaimedBytes)).")
-                print("Revive with: Torpor --revive \(record.sessionId)")
-            } catch { fail(error.localizedDescription) }
+            // Hibernating is async — it waits out a SIGTERM grace period by
+            // yielding rather than blocking — and `run` is synchronous, so this
+            // one-shot command drives the main queue itself and exits from
+            // inside the task. `dispatchMain()` returns Never, so nothing after
+            // it is reachable. The store is held by the task, not left as a
+            // temporary the caller has already released.
+            let hibernateStore = HibernationStore()
+            Task {
+                do {
+                    let record = try await SessionControl.hibernate(session: session,
+                                                                    store: hibernateStore)
+                    print("Hibernated \(record.name), reclaimed \(Fmt.bytes(record.reclaimedBytes)).")
+                    print("Revive with: Torpor --revive \(record.sessionId)")
+                    exit(0)
+                } catch {
+                    FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+                    exit(1)
+                }
+            }
+            dispatchMain()
 
         case "--revive":
             guard let id = arguments.dropFirst(2).first else { fail("--revive needs a session id") }
@@ -239,6 +271,7 @@ enum CLI {
             app.setActivationPolicy(.prohibited)
             let message = MainActor.assumeIsolated { () -> String in
                 let engine = Engine(sideEffects: false)
+                defer { engine.stop() }
                 engine.refresh()
                 let saved = engine.preferences.menuBarMetric
                 var rows: [(String, NSImage)] = []
@@ -306,7 +339,11 @@ enum CLI {
                 do {
                     try PreviewRenderer.menuBarSheet(to: base.appendingPathComponent("menubar.png"))
                     let engine = Engine(sideEffects: false)
+                    defer { engine.stop() }
                     engine.refresh()
+                    // Token totals now arrive from an off-actor scan, so a
+                    // screenshot taken immediately shows none. Let it land.
+                    RunLoop.current.run(until: Date().addingTimeInterval(1))
                     try PreviewRenderer.view(PopoverView(engine: engine, openSettings: {}),
                                              size: NSSize(width: 400, height: 700),
                                              to: base.appendingPathComponent("popover.png"))

@@ -29,15 +29,10 @@ jobs:
           restore-keys: ${{ runner.os }}-spm-
 
       - name: Build (debug)
-        run: swift build 2>&1 | tee build.log
-
-      - name: Fail on warnings
-        run: |
-          if grep -q "warning:" build.log; then
-            echo "::error::Build produced warnings"
-            grep "warning:" build.log
-            exit 1
-          fi
+        # -warnings-as-errors, not a grep over the log: with .build restored
+        # from cache Swift emits no diagnostics for modules it did not
+        # recompile, so a log grep passed unconditionally on every cache hit.
+        run: swift build -Xswiftc -warnings-as-errors
 
       - name: Build the app bundle
         run: ./scripts/build-app.sh

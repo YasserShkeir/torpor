@@ -27,8 +27,6 @@ struct Session: Identifiable, Hashable {
     var childCount: Int = 0
     var cpuSeconds: Double = 0
 
-    /// True when the PID is gone but we hold a hibernation record for it.
-    var isHibernated: Bool = false
     var isFrozen: Bool = false
 
     var id: String { sessionId }

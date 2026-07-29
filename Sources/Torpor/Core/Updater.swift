@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import Sparkle
@@ -54,6 +55,17 @@ final class Updater: NSObject, ObservableObject {
     @Published private(set) var canCheck = true
     @Published private(set) var lastCheckDescription: String?
 
+    /// Whether Sparkle checks on a schedule. Seeded from Sparkle, which honours
+    /// `SUEnableAutomaticChecks` only on first launch and remembers the user's
+    /// choice after that — so this must never write on the way in.
+    @Published var automaticallyChecks = true {
+        didSet {
+            guard let updater = controller?.updater,
+                  updater.automaticallyChecksForUpdates != automaticallyChecks else { return }
+            updater.automaticallyChecksForUpdates = automaticallyChecks
+        }
+    }
+
     private var controller: SPUStandardUpdaterController?
     private var cancellables = Set<AnyCancellable>()
 
@@ -62,6 +74,10 @@ final class Updater: NSObject, ObservableObject {
     static var isAvailable: Bool {
         Bundle.main.bundleIdentifier != nil
             && Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil
+            // Without the public key Sparkle downloads and extracts an update
+            // and only then rejects it, so the whole cost is paid before the
+            // failure is visible.
+            && Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") != nil
     }
 
     static var currentVersion: String {
@@ -76,18 +92,21 @@ final class Updater: NSObject, ObservableObject {
         return Bundle.main.bundlePath.hasPrefix("/Applications") ? .applications : .elsewhere
     }
 
-    override init() {
+    init(starting: Bool = true) {
         super.init()
         guard Self.isAvailable else {
             canCheck = false
             lastCheckDescription = "Updates are only available in a built app bundle."
             return
         }
+        // Starting Sparkle reaches the network and can put a window on screen,
+        // which the side-effect-free CLI paths must not do.
+        guard starting else { canCheck = false; return }
         // startingUpdater: true schedules the background check itself, honouring
         // SUScheduledCheckInterval from Info.plist.
         controller = SPUStandardUpdaterController(startingUpdater: true,
                                                   updaterDelegate: nil,
-                                                  userDriverDelegate: nil)
+                                                  userDriverDelegate: self)
         observe()
     }
 
@@ -105,6 +124,10 @@ final class Updater: NSObject, ObservableObject {
                     "Last checked \(Fmt.duration(Date().timeIntervalSince(date))) ago"
             }
             .store(in: &cancellables)
+        updater.publisher(for: \.automaticallyChecksForUpdates)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] value in self?.automaticallyChecks = value }
+            .store(in: &cancellables)
     }
 
     /// Explicit "Check for Updates…". Sparkle owns the whole UI from here —
@@ -112,10 +135,31 @@ final class Updater: NSObject, ObservableObject {
     func checkForUpdates() {
         controller?.updater.checkForUpdates()
     }
+}
 
-    /// Whether Sparkle checks on a schedule. Mirrors `SUEnableAutomaticChecks`.
-    var automaticallyChecks: Bool {
-        get { controller?.updater.automaticallyChecksForUpdates ?? false }
-        set { controller?.updater.automaticallyChecksForUpdates = newValue }
+/// Torpor is `LSUIElement`: no Dock icon to bounce, and a scheduled update
+/// window opens behind whatever the user is working in unless the app is
+/// activated first. `@preconcurrency` because Sparkle's protocol is a plain
+/// Objective-C one and this type is main-actor isolated.
+extension Updater: @preconcurrency SPUStandardUserDriverDelegate {
+
+    /// Sparkle only consults the two methods below when this is true.
+    var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    /// Sparkle keeps showing the update. Returning false makes *this* delegate
+    /// responsible for surfacing it, and there is no in-app badge to surface it
+    /// with — scheduled updates would simply never be seen.
+    func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem,
+                                                              andInImmediateFocus immediateFocus: Bool) -> Bool {
+        true
+    }
+
+    /// A user-initiated check already has the app active; a scheduled one does
+    /// not, and its window would open behind the user's work.
+    func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool,
+                                                   forUpdate update: SUAppcastItem,
+                                                   state: SPUUserUpdateState) {
+        guard !state.userInitiated else { return }
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

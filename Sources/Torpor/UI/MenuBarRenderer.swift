@@ -39,45 +39,109 @@ enum ColorMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// Which number the menu bar shows when several are available.
+/// Which quota window the bar measures.
+///
+/// A window and nothing else. This picker used to also offer memory, one
+/// model's weekly limit and "whichever is highest", which meant the same 34pt
+/// gauge in the same three colours could be a share of your installed RAM or a
+/// share of a rate limit, with nothing on screen saying which — and a bar for
+/// memory answers a question nobody asks. The status item is now always one
+/// window's bar with one memory figure beside it; this chooses the window, and
+/// `MemoryFigure` chooses the figure.
 enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
-    case fiveHour, sevenDay, highest, model, memory
+    case fiveHour, sevenDay
     var id: String { rawValue }
+
+    /// Anything unrecognised is the 5-hour window.
+    ///
+    /// `memory`, `highest` and `model` were real choices in shipped builds, so
+    /// those three strings are sitting in the preferences file of everyone who
+    /// picked one. `Preferences.load` would recover from the decode failure by
+    /// restoring the key to its default and retrying, but only as a side effect
+    /// of its corrupt-file machinery — and losing a setting to a rename is a
+    /// migration we owe the user, not a corrupt file.
+    init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = MenuBarMetric(rawValue: raw) ?? .fiveHour
+    }
 
     var label: String {
         switch self {
-        // "Session" elsewhere in Torpor means a Claude Code process. Using it
-        // here for a rate-limit window put two unrelated meanings in one
-        // five-item picker.
+        // "Session" elsewhere in Torpor means a Claude Code process, so the
+        // rate-limit window is never called one here.
         case .fiveHour: return "5-hour limit"
         case .sevenDay: return "Weekly limit (all models)"
-        case .highest:  return "Whichever limit is highest"
-        case .model:    return "One model's weekly limit"
-        case .memory:   return "Memory used by Claude Code"
         }
     }
 
     /// What the gauge is a proportion *of*. A bar with no label is only
-    /// meaningful if the user has been told what fills it — "5.63 GB" beside a
-    /// half-full bar otherwise invites the reasonable question "half of what?".
+    /// meaningful if the user has been told what fills it — a memory figure
+    /// beside a half-full bar otherwise invites the reasonable question "half
+    /// of what?", which is exactly the confusion this redesign removes.
     var gaugeMeaning: String {
         switch self {
         case .fiveHour:
-            return "Share of your rolling 5-hour limit used so far."
+            return "The bar is your rolling 5-hour limit: how much of this window you have used."
         case .sevenDay:
-            return "Share of your weekly limit used so far, across all models."
-        case .highest:
-            return "Whichever of the 5-hour and weekly limits is further along."
-        case .model:
-            return "Share of this model's own weekly limit used so far."
-        case .memory:
-            return "Memory held by all Claude Code sessions, as a share of your Mac's total RAM. Memory never resets, so there is no countdown — but on the Progress bar style the lower bar keeps running, showing how far through your quota window you are."
+            return "The bar is your weekly limit across all models: how much of this week you have used."
         }
     }
 
+    /// What the notch across the bar means, for the tooltip. The same sentence
+    /// for both cases now — every window this enum offers has a clock to pace
+    /// against, which is the whole reason `hasResetWindow` is gone.
+    var markerMeaning: String {
+        "The notch is the clock. Fill short of it means you are inside the pace this window can carry; past it means you are ahead of the clock."
+    }
+}
 
-    /// Windowed metrics reset; memory does not, so a countdown is meaningless.
-    var hasResetWindow: Bool { self != .memory }
+/// Which memory figure sits to the right of the bar.
+///
+/// Two numbers, one slot, and the colour says which one you are looking at
+/// rather than how alarmed to be: green is "here is the total", orange is
+/// "this much is reclaimable" — the same orange the popover's Reclaim button
+/// already uses. Both are always drawn the same way, so switching between them
+/// changes the number and its colour and nothing about the layout.
+enum MemoryFigure: String, Codable, CaseIterable, Identifiable {
+    /// Everything every Claude Code session is holding.
+    case total
+    /// Only what hibernating the idle sessions would give back.
+    case reclaimable
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .total:       return "Memory used by all sessions"
+        case .reclaimable: return "Memory you could reclaim"
+        }
+    }
+
+    /// What the trailing figure is, for the tooltip and the Settings caption.
+    ///
+    /// Deliberately says nothing about colour or about which side of the item
+    /// it lands on: Monochrome draws no colour, and the Percentage style draws
+    /// no bar to be beside.
+    var meaning: String {
+        switch self {
+        case .total:
+            return "The memory figure is everything your Claude Code sessions are holding right now, compressed pages included."
+        case .reclaimable:
+            return "The memory figure is what hibernating the sessions idle past your threshold would give back."
+        }
+    }
+
+    /// How that figure is drawn, which depends on the colour mode.
+    func colourNote(_ mode: ColorMode) -> String {
+        guard mode != .monochrome else {
+            return "Monochrome draws it in the menu bar's own tint, like everything else — the figure is still whichever one you picked."
+        }
+        switch self {
+        case .total:
+            return "Drawn green, because it is a total rather than a warning."
+        case .reclaimable:
+            return "Drawn orange — the same orange as the Reclaim button in the panel."
+        }
+    }
 }
 
 /// A percentage on its own does not tell you whether to slow down; the reset
@@ -112,16 +176,58 @@ enum MenuBarRenderer {
         var marker: TimeMarker
         /// 0…1, or nil when there is no value to show (no quota yet).
         var fraction: Double?
+        /// The exact level, e.g. "87%". Drawn only by the Percentage style —
+        /// the bar carries the level already, so repeating it as a number
+        /// beside the memory figure would put two numbers where one belongs.
+        /// Still read for the tooltip, which is where `.bar` users recover it.
         var percentText: String?
+        /// The trailing memory figure, already formatted. Nil when there is
+        /// nothing to report.
+        var memoryText: String?
+        /// Colour for that figure. Nil means "no colour of its own": the status
+        /// item leaves it to the menu bar's tint, which is what Monochrome
+        /// wants. Never derived from a threshold — see `memoryTint`.
+        var memoryColor: NSColor?
         var resetsAt: Date?
         var sessionCount: Int
         var isStale: Bool
-        /// 0…1 through the current reset window, or nil when unknown. Drawn as
-        /// a tick on the gauge so usage can be read against elapsed time.
+        /// 0…1 through the window that `fraction` measures, or nil when that
+        /// window is unknown or the metric has none. Never another window's
+        /// clock — see showsTimeMarker.
         var windowElapsed: Double?
+        /// The appearance to resolve colours in. The menu bar has its own — it
+        /// is dark over a dark wallpaper even in Light Mode — and a dynamic
+        /// NSColor bakes in whichever appearance is current when the drawing
+        /// handler runs, which is the app's. Nil means "whatever is current",
+        /// which is what a preview drawn inside a window wants.
+        var appearance: NSAppearance?
+
+        /// A window whose reset time has passed describes a window that no
+        /// longer exists: the snapshot's own timestamp can still look fresh
+        /// while the numbers in it are last window's.
+        var isExpired: Bool { resetsAt.map { $0 <= Date() } ?? false }
+
+        /// Anything we cannot vouch for is drawn dimmed rather than
+        /// recoloured — the level is still the last known level.
+        var isUnverified: Bool { isStale || isExpired }
+
+        /// Whether the clock notch belongs on this gauge at all. It does not
+        /// when there is no reading to pace against, and `windowElapsed` is
+        /// nil whenever the elapsed fraction is not the elapsed fraction of
+        /// *this* bar's own window.
+        var showsTimeMarker: Bool {
+            style == .bar && fraction != nil && windowElapsed != nil
+        }
     }
 
     static let height: CGFloat = 18
+
+    /// The one font the trailing text is drawn in, wherever it is drawn.
+    ///
+    /// Monospaced digits so a ticking countdown and a changing memory figure do
+    /// not shuffle the item's width on every update. Computed rather than a
+    /// stored static because `NSFont` is not Sendable.
+    static var titleFont: NSFont { .monospacedDigitSystemFont(ofSize: 11, weight: .regular) }
 
     /// Colour for a fill level, honouring the chosen mode.
     static func tint(for fraction: Double?, mode: ColorMode) -> NSColor {
@@ -140,35 +246,101 @@ enum MenuBarRenderer {
         }
     }
 
-    /// The trailing text: percentage and/or countdown.
+    /// Colour for the trailing memory figure.
     ///
-    /// Each style earns its place by showing something the others don't:
-    /// `iconOnly` is silent, `percentage` is text with no mark, `bar` and
-    /// `battery` let the gauge carry the number, and `compact` shows the number
-    /// but drops the countdown.
-    static func title(_ input: Input) -> String {
-        var parts: [String] = []
-
-        if let percent = input.percentText { parts.append(percent) }
-
-        let marker = input.marker
-        if let resets = input.resetsAt, marker != .none {
-            let remaining = resets.timeIntervalSinceNow
-            switch marker {
-            case .remaining:
-                if remaining > 0 { parts.append(Fmt.duration(remaining)) }
-            case .resetClock:
-                parts.append(clock(resets))
-            case .both:
-                if remaining > 0 { parts.append("\(Fmt.duration(remaining)) · \(clock(resets))") }
-                else { parts.append(clock(resets)) }
-            case .none:
-                break
-            }
+    /// Tied to *which figure it is*, never to a threshold: green means "here is
+    /// the total", orange means "this much is reclaimable", which is the same
+    /// orange the popover already uses for reclaimable memory. Nil under
+    /// Monochrome, whose entire purpose is a menu bar with no colour in it —
+    /// callers draw the run in the menu bar's own tint instead.
+    static func memoryTint(for figure: MemoryFigure, mode: ColorMode) -> NSColor? {
+        guard mode != .monochrome else { return nil }
+        switch figure {
+        case .total:       return .systemGreen
+        case .reclaimable: return .systemOrange
         }
+    }
 
-        let joined = parts.joined(separator: " ")
+    /// The trailing text, run by run, in draw order.
+    ///
+    /// Runs rather than one string because two unrelated quantities now sit
+    /// side by side: the level takes the gauge's tint, the memory figure takes
+    /// green or orange by which figure it is. One `foregroundColor` for the
+    /// whole title could only ever be right about one of them — which is how
+    /// the layout this replaced came to draw a memory bar in quota colours.
+    ///
+    /// A nil colour means "no colour of your own". `NSStatusBarButton` tints
+    /// its own title and inverts it while the item is highlighted, and an
+    /// explicit `labelColor` defeats both, so Monochrome asks for none;
+    /// `composite` has no button to defer to and substitutes `labelColor`.
+    static func titleRuns(_ input: Input) -> [(text: String, color: NSColor?)] {
+        let level: NSColor? = (input.colorMode == .monochrome && !input.isUnverified)
+            ? nil : titleColor(input)
+
+        var runs: [(text: String, color: NSColor?)] = []
+        // Only the style that draws no gauge shows the number. In `.bar` the
+        // exact percentage lives in the tooltip instead.
+        if input.style == .percentage, let percent = input.percentText {
+            runs.append((percent, level))
+        }
+        if let memory = input.memoryText {
+            // Deliberately not dimmed alongside a stale quota. This figure is
+            // measured on this Mac on this tick; it is fresh however old the
+            // usage snapshot beside it happens to be.
+            //
+            // Monochrome is enforced here rather than trusted from the caller.
+            // `memoryTint` already returns nil for it, but a hand-built Input
+            // that hard-codes a colour must not be able to put green in a menu
+            // bar the user asked to keep colourless.
+            runs.append((memory, input.colorMode == .monochrome ? nil : input.memoryColor))
+        }
+        if let countdown = countdown(input) {
+            runs.append((countdown, level))
+        }
+        return runs
+    }
+
+    /// The trailing text with no colour information, for accessibility and for
+    /// callers that only need to know whether there is anything to draw.
+    static func title(_ input: Input) -> String {
+        let joined = titleRuns(input).map(\.text).joined(separator: " ")
         return joined.isEmpty ? "" : " \(joined)"
+    }
+
+    /// The trailing text as the status item should set it.
+    static func attributedTitle(_ input: Input) -> NSAttributedString {
+        assemble(titleRuns(input), substituting: nil)
+    }
+
+    /// One attributed string from the runs. `substituting` is the colour a run
+    /// that asked for none is given — nil to leave it unset.
+    private static func assemble(_ runs: [(text: String, color: NSColor?)],
+                                 substituting fallback: NSColor?) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        for run in runs {
+            var attributes: [NSAttributedString.Key: Any] = [.font: titleFont]
+            if let colour = run.color ?? fallback { attributes[.foregroundColor] = colour }
+            // Each run carries its own leading space, so the first one gives
+            // the whole title the gap it needs from the gauge.
+            out.append(NSAttributedString(string: " \(run.text)", attributes: attributes))
+        }
+        return out
+    }
+
+    /// The countdown run, or nil when there is no window or none was asked for.
+    private static func countdown(_ input: Input) -> String? {
+        guard let resets = input.resetsAt, input.marker != .none else { return nil }
+        let remaining = resets.timeIntervalSinceNow
+        switch input.marker {
+        case .remaining:
+            return remaining > 0 ? Fmt.duration(remaining) : nil
+        case .resetClock:
+            return clock(resets)
+        case .both:
+            return remaining > 0 ? "\(Fmt.duration(remaining)) · \(clock(resets))" : clock(resets)
+        case .none:
+            return nil
+        }
     }
 
     /// A reset timestamp, with a day attached whenever it is not today.
@@ -207,12 +379,21 @@ enum MenuBarRenderer {
     static func titleColor(_ input: Input) -> NSColor {
         let base = tint(for: input.fraction, mode: input.colorMode)
         // A stale reading is dimmed rather than recoloured: the level is still
-        // the last known level, we just cannot vouch for it.
-        return input.isStale ? base.withAlphaComponent(0.55) : base
+        // the last known level, we just cannot vouch for it — and a window
+        // whose reset time has passed cannot be vouched for either, however
+        // recent the snapshot.
+        return input.isUnverified ? base.withAlphaComponent(0.55) : base
     }
 
-    /// The complete status item — gauge and coloured text composited into one
-    /// image, exactly as the menu bar draws it.
+    /// The status item's gauge and coloured text composited into one image,
+    /// drawn by the same code the status item uses.
+    ///
+    /// Close, not identical. NSStatusBarButton lays out image and title with
+    /// its own metrics and tints template content itself, so the 2pt inset,
+    /// the 6pt gap and the exact Monochrome tone here are this function's
+    /// approximation of them — nothing outside AppKit can read the real ones.
+    /// Good enough to choose a style and a colour by; not a pixel reference,
+    /// and callers must not claim it is one.
     ///
     /// The Appearance preview used to show only the gauge, with the text next
     /// to it as a separate uncoloured SwiftUI `Text`. That meant text-only
@@ -220,43 +401,45 @@ enum MenuBarRenderer {
     /// colour it was previewing.
     static func composite(_ input: Input, background: NSColor = .clear) -> NSImage {
         let gaugeImage = image(input)
-        let text = title(input)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: titleColor(input),
-        ]
-        let textSize = text.isEmpty ? .zero : NSString(string: text).size(withAttributes: attributes)
+        // Every run gets a colour here: there is no status item button to hand
+        // an uncoloured run to, and drawing one with no foregroundColor at all
+        // would land it in whatever the graphics context happened to be set to.
+        let text = assemble(titleRuns(input), substituting: .labelColor)
+        let textSize = text.length == 0 ? .zero : text.size()
         let width = max((gaugeImage?.size.width ?? 0) + textSize.width + 6, 24)
         let size = NSSize(width: width, height: height + 4)
 
         return NSImage(size: size, flipped: false) { rect in
-            if background != .clear {
-                background.setFill()
-                rect.fill()
-            }
-            var x: CGFloat = 2
-            if let gaugeImage {
-                // Template images carry only alpha, so tint them the way the
-                // menu bar would rather than drawing them as transparent holes.
-                if gaugeImage.isTemplate {
-                    let tinted = NSImage(size: gaugeImage.size, flipped: false) { inner in
-                        gaugeImage.draw(in: inner)
-                        NSColor.labelColor.set()
-                        inner.fill(using: .sourceAtop)
-                        return true
-                    }
-                    tinted.draw(at: NSPoint(x: x, y: 2), from: .zero,
-                                operation: .sourceOver, fraction: 1)
-                } else {
-                    gaugeImage.draw(at: NSPoint(x: x, y: 2), from: .zero,
-                                    operation: .sourceOver, fraction: 1)
+            // Same reason as gauge(): dynamic colours resolve when this handler
+            // runs, against whichever appearance is current then.
+            (input.appearance ?? NSAppearance.currentDrawing())
+                .performAsCurrentDrawingAppearance {
+                if background != .clear {
+                    background.setFill()
+                    rect.fill()
                 }
-                x += gaugeImage.size.width
-            }
-            if !text.isEmpty {
-                NSString(string: text).draw(
-                    at: NSPoint(x: x, y: 2 + (height - textSize.height) / 2),
-                    withAttributes: attributes)
+                var x: CGFloat = 2
+                if let gaugeImage {
+                    // Template images carry only alpha, so tint them the way the
+                    // menu bar would rather than drawing them as transparent holes.
+                    if gaugeImage.isTemplate {
+                        let tinted = NSImage(size: gaugeImage.size, flipped: false) { inner in
+                            gaugeImage.draw(in: inner)
+                            NSColor.labelColor.set()
+                            inner.fill(using: .sourceAtop)
+                            return true
+                        }
+                        tinted.draw(at: NSPoint(x: x, y: 2), from: .zero,
+                                    operation: .sourceOver, fraction: 1)
+                    } else {
+                        gaugeImage.draw(at: NSPoint(x: x, y: 2), from: .zero,
+                                        operation: .sourceOver, fraction: 1)
+                    }
+                    x += gaugeImage.size.width
+                }
+                if text.length > 0 {
+                    text.draw(at: NSPoint(x: x, y: 2 + (height - textSize.height) / 2))
+                }
             }
             return true
         }
@@ -264,40 +447,51 @@ enum MenuBarRenderer {
 
     // MARK: - Drawing
 
-    /// Radial burst, matching the app icon.
-    ///
-    /// Simplified to 8 spokes rather than the icon's 11: at an 18pt menu bar
-    /// size, eleven petals is roughly two pixels each and collapses into a
-    /// grey smudge. Template-rendered so it follows the menu bar's own tint and
-    /// inverts correctly in dark mode.
-
-    /// One bar, with a white marker showing how far through the window you are.
+    /// One bar, with a notch showing how far through the window you are.
     ///
     /// This replaced a two-bar layout, which was itself a replacement for a
-    /// transparent notch. The notch failed because it was cut *out* of the bar —
-    /// on a dark menu bar a gap is the same colour as the background, so there
-    /// was nothing to see. The fix is not subtlety: the marker is solid white
-    /// and stands proud of the bar at both ends, so it reads as a deliberate
-    /// mark rather than a rendering artefact.
+    /// transparent notch. That first notch failed because it was cut only
+    /// *inside* the bar, where an empty track and a hole look the same; the
+    /// pips above and below are what fixes it. See drawTimeMarker for why the
+    /// mark is a hole rather than a white line.
     private static func gauge(_ input: Input, width: CGFloat) -> NSImage {
         let size = NSSize(width: width, height: height)
-        let fillColor = tint(for: input.fraction, mode: input.colorMode)
 
         let image = NSImage(size: size, flipped: false) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            // A dynamic NSColor resolves when this handler runs, against the
+            // app's appearance rather than the menu bar's — which is dark over
+            // a dark wallpaper even in Light Mode.
+            (input.appearance ?? NSAppearance.currentDrawing())
+                .performAsCurrentDrawingAppearance {
+                let fillColor = tint(for: input.fraction, mode: input.colorMode)
+                // A reading we cannot vouch for is dimmed, notch included: at
+                // full strength the notch keeps advancing against a frozen
+                // fill, and the widening gap reads as "you are burning fast"
+                // when nothing has been measured since.
+                let strength: CGFloat = input.isUnverified ? 0.45 : 1
 
-            let track = CGRect(x: 2, y: rect.midY - 3.5, width: width - 4, height: 7)
-            drawBar(context: context, track: track,
-                    fraction: input.fraction,
-                    // Track derived from the fill rather than labelColor: label
-                    // colours resolve against the *app's* appearance inside an
-                    // NSImage handler, not the menu bar's, so a light-appearance
-                    // app painted a near-black track onto a dark menu bar.
-                    trackColor: fillColor.withAlphaComponent(0.22),
-                    fillColor: fillColor.withAlphaComponent(input.isStale ? 0.45 : 1),
-                    radius: 3.5)
+                let track = CGRect(x: 2, y: rect.midY - 3.5, width: width - 4, height: 7)
+                drawBar(context: context, track: track,
+                        fraction: input.fraction,
+                        // Track derived from the fill rather than labelColor so
+                        // the two always agree, whatever the mode.
+                        trackColor: fillColor.withAlphaComponent(0.22),
+                        fillColor: fillColor.withAlphaComponent(strength),
+                        radius: 3.5)
 
-            drawTimeMarker(context: context, track: track, elapsed: input.windowElapsed)
+                if input.fraction == nil {
+                    // An empty track is also exactly what 0% looks like. The
+                    // dash says "nothing measured yet", in the same vocabulary
+                    // as the Percentage style's "—".
+                    context.setFillColor(fillColor.withAlphaComponent(0.55).cgColor)
+                    context.fill(CGRect(x: track.midX - 3, y: track.midY - 0.75,
+                                        width: 6, height: 1.5))
+                } else if input.showsTimeMarker, let elapsed = input.windowElapsed {
+                    drawTimeMarker(context: context, track: track, elapsed: elapsed,
+                                   color: fillColor, strength: strength)
+                }
+            }
             return true
         }
         // Adaptive and accent draw real colour, so they must not be
@@ -306,30 +500,34 @@ enum MenuBarRenderer {
         return image
     }
 
-    /// Vertical white line marking elapsed time in the current window.
+    /// A gap punched through the bar at the elapsed-time position, with a pip
+    /// standing proud above and below it.
     ///
-    /// Overhangs the track by 3pt at each end, and that overhang is what makes
-    /// it legible: inside the bar it contrasts with the fill, outside it breaks
-    /// the bar's silhouette so the eye finds it without hunting. A faint dark
-    /// edge keeps it visible on a light menu bar, where plain white over the
-    /// unfilled part of the track would otherwise vanish.
-    private static func drawTimeMarker(context: CGContext, track: CGRect, elapsed: Double?) {
-        guard let elapsed else { return }
-        // Inset so the marker always lands on the track rather than under a
-        // rounded cap or past the end.
-        let inset = 1.5 / max(track.width, 1)
-        let position = min(max(elapsed, inset), 1 - inset)
-        let x = track.minX + track.width * CGFloat(position)
+    /// Alpha rather than colour, because Monochrome is template-rendered and a
+    /// template image keeps only alpha: a white line over a full-alpha fill is
+    /// the same pixel as the fill, so the mark disappeared exactly where it
+    /// matters — once usage had overtaken the clock. A hole differs from the
+    /// fill under any tint; the pips carry the position where the bar is empty
+    /// and a hole would read as nothing.
+    private static func drawTimeMarker(context: CGContext, track: CGRect,
+                                       elapsed: Double, color: NSColor, strength: CGFloat) {
+        let gapWidth: CGFloat = 2
+        let overhang: CGFloat = 2.5
+        // Keep the whole gap on the track: half of it hanging past a rounded
+        // cap reads as a chipped bar rather than as a mark.
+        let margin = Double((gapWidth / 2 + 1) / max(track.width, 1))
+        let position = min(max(elapsed, margin), 1 - margin)
+        let x = track.minX + track.width * CGFloat(position) - gapWidth / 2
 
-        let overhang: CGFloat = 3
-        let markerWidth: CGFloat = 2
-        let bar = CGRect(x: x - markerWidth / 2, y: track.minY - overhang,
-                         width: markerWidth, height: track.height + overhang * 2)
+        context.saveGState()
+        context.setBlendMode(.destinationOut)
+        context.setFillColor(gray: 0, alpha: strength)
+        context.fill(CGRect(x: x, y: track.minY, width: gapWidth, height: track.height))
+        context.restoreGState()
 
-        context.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
-        context.fill(bar.insetBy(dx: -0.5, dy: -0.5))
-        context.setFillColor(NSColor.white.cgColor)
-        context.fill(bar)
+        context.setFillColor(color.withAlphaComponent(strength).cgColor)
+        context.fill(CGRect(x: x, y: track.maxY, width: gapWidth, height: overhang))
+        context.fill(CGRect(x: x, y: track.minY - overhang, width: gapWidth, height: overhang))
     }
 
 
@@ -354,11 +552,4 @@ enum MenuBarRenderer {
                             height: track.height))
         context.restoreGState()
     }
-
-    /// Radial burst, matching the app icon.
-    ///
-    /// Simplified to 8 spokes rather than the icon's 11: at an 18pt menu bar
-    /// size, eleven petals is roughly two pixels each and collapses into a
-    /// grey smudge. Template-rendered so it follows the menu bar's own tint and
-    /// inverts correctly in dark mode.
 }

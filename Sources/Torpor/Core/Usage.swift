@@ -20,12 +20,48 @@ struct QuotaSnapshot: Codable, Equatable {
     var isStale: Bool { age > 900 }
 }
 
-/// Reads the quota snapshot written by Torpor's statusline shim.
+/// Per-session figures Claude Code computes for us and hands the statusline.
+///
+/// Kept apart from `QuotaSnapshot` on purpose, and the distinction is the whole
+/// point of this type:
+///
+/// * `rate_limits` is **account-wide**. Whichever session rendered last speaks
+///   for the account, so the single shared snapshot is authoritative for it.
+/// * `cost` and `context_window` are **per session**. Every session's shim run
+///   overwrites that same shared file, so reading cost from it would attribute
+///   one session's spend to the whole app — and the number would jump around as
+///   different sessions took turns rendering.
+///
+/// So the shim also drops a copy keyed by session id, and these come from
+/// there. Collapsing the two back into one file looks like a simplification and
+/// is a correctness regression.
+struct SessionUsage: Equatable {
+    var sessionId: String
+    /// What Claude Code says this session has cost, in US dollars. Exact and
+    /// already computed — no local price table to maintain, no fast-mode
+    /// multiplier, no cache-write ratio, nothing to go stale when prices move.
+    var costUSD: Double?
+    /// Context window occupancy, 0-100, as the server computes it.
+    var contextUsedPercentage: Double?
+    /// Tokens resident in the context window. `total_input_tokens` already
+    /// includes the cache reads and creations — on a live payload it equals
+    /// `current_usage`'s four components summed — so the resident count is
+    /// just the two totals added, not a fifth number to reconcile.
+    var contextTokens: Int?
+    var contextWindowSize: Int?
+    var modelId: String?
+    var modelName: String?
+    var capturedAt: Date
+}
+
+/// Reads the usage snapshots written by Torpor's statusline shim.
 ///
 /// This is deliberately the *only* quota path. Claude Code hands the statusline
 /// a JSON payload on stdin containing `rate_limits.five_hour.used_percentage`,
 /// `rate_limits.seven_day.used_percentage` and their `resets_at` timestamps —
-/// documented, server-computed, and already in the user's possession.
+/// documented, server-computed, and already in the user's possession. The same
+/// payload also carries `cost.total_cost_usd`, `context_window` and `model`,
+/// which the shim extracts alongside them.
 ///
 /// This is the default and the only path that needs no credentials.
 ///
@@ -41,20 +77,10 @@ enum QuotaReader {
         Paths.support.appendingPathComponent("usage-snapshot.json")
     }
 
-    private struct Payload: Decodable {
-        struct Limits: Decodable {
-            struct Window: Decodable {
-                var used_percentage: Double?
-                var resets_at: Double?
-            }
-            var five_hour: Window?
-            var seven_day: Window?
-            var seven_day_opus: Window?
-            var seven_day_sonnet: Window?
-        }
-        var rate_limits: Limits?
-        var session_id: String?
-        var captured_at: Double?
+    /// One file per session id, written by the shim next to the shared
+    /// snapshot. See `SessionUsage` for why this exists.
+    static var sessionsDirectory: URL {
+        Paths.support.appendingPathComponent("usage-sessions", isDirectory: true)
     }
 
     /// Whether Claude Code has written a statusline payload at all.
@@ -66,36 +92,110 @@ enum QuotaReader {
         FileManager.default.fileExists(atPath: snapshotURL.path)
     }
 
-    static func read() -> QuotaSnapshot? {
-        guard let data = try? Data(contentsOf: snapshotURL),
-              let payload = try? JSONDecoder().decode(Payload.self, from: data) else {
-            return nil
-        }
-        guard let limits = payload.rate_limits else { return nil }
+    /// Read as loose dictionaries rather than through `Codable`.
+    ///
+    /// The payload is undocumented and has gained fields between Claude Code
+    /// releases; one key changing shape must cost us that key, not the whole
+    /// decode. Every lookup below is therefore an optional cast that degrades
+    /// to nil on its own.
+    private static func object(at url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object
+    }
 
-        func window(_ w: Payload.Limits.Window?) -> QuotaSnapshot.Window? {
-            guard let w, let pct = w.used_percentage else { return nil }
-            return .init(usedPercentage: pct,
-                         resetsAt: w.resets_at.map { Date(timeIntervalSince1970: $0) })
-        }
+    /// JSON numbers arrive as `NSNumber` and the payload mixes forms — `44`
+    /// for a percentage, `206.73778174999995` for a cost — so a same-type cast
+    /// to `Double` or `Int` would drop whichever form it was not expecting.
+    private static func number(_ raw: Any?) -> Double? { (raw as? NSNumber)?.doubleValue }
+
+    /// Bounded, because `Int(someDouble)` traps rather than overflows and this
+    /// file is parsed from whatever a future Claude Code writes.
+    private static func integer(_ raw: Any?) -> Int? {
+        guard let value = number(raw), value.magnitude < 1e15 else { return nil }
+        return Int(value)
+    }
+
+    private static func window(_ raw: Any?) -> QuotaSnapshot.Window? {
+        guard let values = raw as? [String: Any],
+              let percentage = number(values["used_percentage"]) else { return nil }
+        return .init(usedPercentage: percentage,
+                     resetsAt: number(values["resets_at"])
+                        .map { Date(timeIntervalSince1970: $0) })
+    }
+
+    /// When the shim last wrote a file. The payload carries no capture time of
+    /// its own, so the modification date is it.
+    private static func writtenAt(_ url: URL) -> Date? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return attributes?[.modificationDate] as? Date
+    }
+
+    /// Account-wide quota, from the shared snapshot.
+    ///
+    /// The newest write wins by construction: every session overwrites the same
+    /// path, and `rate_limits` is account-wide, so whoever rendered last is
+    /// telling the truth about the account regardless of which session it was.
+    static func read() -> QuotaSnapshot? {
+        guard let payload = object(at: snapshotURL),
+              let limits = payload["rate_limits"] as? [String: Any] else { return nil }
 
         var scoped: [String: QuotaSnapshot.Window] = [:]
-        if let opus = window(limits.seven_day_opus) { scoped["Opus"] = opus }
-        if let sonnet = window(limits.seven_day_sonnet) { scoped["Sonnet"] = sonnet }
+        if let opus = window(limits["seven_day_opus"]) { scoped["Opus"] = opus }
+        if let sonnet = window(limits["seven_day_sonnet"]) { scoped["Sonnet"] = sonnet }
 
-        var captured = payload.captured_at.map { Date(timeIntervalSince1970: $0) }
-        if captured == nil {
-            let attrs = try? FileManager.default.attributesOfItem(atPath: snapshotURL.path)
-            captured = attrs?[.modificationDate] as? Date
-        }
+        let captured = number(payload["captured_at"]).map { Date(timeIntervalSince1970: $0) }
+            ?? writtenAt(snapshotURL)
 
         return QuotaSnapshot(
-            fiveHour: window(limits.five_hour),
-            sevenDay: window(limits.seven_day),
+            fiveHour: window(limits["five_hour"]),
+            sevenDay: window(limits["seven_day"]),
             scoped: scoped,
             capturedAt: captured ?? Date(),
-            sourceSessionId: payload.session_id
+            sourceSessionId: payload["session_id"] as? String
         )
+    }
+
+    /// Per-session cost and context, keyed by session id.
+    ///
+    /// Also the only thing that ever deletes these files, so it prunes to the
+    /// sessions still running. An empty `live` set is treated as "we could not
+    /// enumerate sessions this pass" rather than "nothing is running": deleting
+    /// everything on a failed probe would throw away cost figures no later
+    /// render can reconstruct, since `total_cost_usd` only reappears while the
+    /// session that owns it is still alive.
+    static func sessionUsage(live: Set<String>) -> [String: SessionUsage] {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: sessionsDirectory, includingPropertiesForKeys: nil)
+        else { return [:] }
+
+        var out: [String: SessionUsage] = [:]
+        for file in files where file.pathExtension == "json" {
+            let sessionId = file.deletingPathExtension().lastPathComponent
+            guard live.contains(sessionId) else {
+                if !live.isEmpty { try? FileManager.default.removeItem(at: file) }
+                continue
+            }
+            guard let payload = object(at: file) else { continue }
+            let cost = payload["cost"] as? [String: Any] ?? [:]
+            let context = payload["context_window"] as? [String: Any] ?? [:]
+            let model = payload["model"] as? [String: Any] ?? [:]
+            let input = integer(context["total_input_tokens"])
+            let output = integer(context["total_output_tokens"])
+            out[sessionId] = SessionUsage(
+                sessionId: sessionId,
+                costUSD: number(cost["total_cost_usd"]),
+                contextUsedPercentage: number(context["used_percentage"]),
+                contextTokens: (input == nil && output == nil)
+                    ? nil : (input ?? 0) + (output ?? 0),
+                contextWindowSize: integer(context["context_window_size"]),
+                modelId: model["id"] as? String,
+                modelName: model["display_name"] as? String,
+                capturedAt: writtenAt(file) ?? Date()
+            )
+        }
+        return out
     }
 }
 
@@ -110,6 +210,10 @@ struct TokenTotals: Equatable {
     /// Tokens per model. The scanner already reads `message.model` on every
     /// record to build `models`; keeping the counts costs nothing and is the
     /// only per-model figure available without a server.
+    ///
+    /// Nothing renders it since the model split was removed, but the scanner is
+    /// the source of truth for it, so it is kept correct rather than allowed to
+    /// drift — a bucket that can go negative is a bug waiting for its reader.
     var byModel: [String: Int] = [:]
     /// Of `total`, how much came from subagent transcripts rather than the
     /// parent conversation.
@@ -136,7 +240,8 @@ struct TokenTotals: Equatable {
 ///
 /// * **Deduplicate on `(message.id, requestId)`, keeping the largest snapshot.**
 ///   Streaming writes the same message repeatedly with growing token counts;
-///   summing rows double-counts badly.
+///   summing rows double-counts badly. Records carrying neither fall back to
+///   their own `uuid` — see `dedupeKey`.
 /// * **Read `subagents/**/*.jsonl` too.** An earlier version skipped them,
 ///   assuming their usage was already counted in the parent. It isn't. Measured
 ///   on one real session: parent 252.1M tokens, subagents 91.1M, and the
@@ -158,14 +263,24 @@ actor TranscriptScanner {
     /// What one deduplicated message contributed, so a later, larger snapshot
     /// of the same message can replace it rather than add to it.
     private struct Contribution {
+        /// Which `byModel` bucket this landed in. Without it the back-out below
+        /// subtracts from whichever model the *newer* record names, and a retry
+        /// served by a different model drives the wrong bucket negative —
+        /// 12 real occurrences in this machine's transcripts.
+        var model = ""
         var input = 0, output = 0, cacheRead = 0, cacheCreation = 0
         var sum: Int { input + output + cacheRead + cacheCreation }
     }
 
     private var offsets: [String: UInt64] = [:]
     private var cache: [String: TokenTotals] = [:]
-    /// session path -> (messageId|requestId) -> contribution already counted.
+    /// transcript path -> dedupe key -> contribution already counted.
     private var seen: [String: [String: Contribution]] = [:]
+    /// Every transcript path each session touched on its last scan.
+    ///
+    /// The keep-set for `prune` is built from these rather than from session
+    /// ids, because a session's files are not all named after it.
+    private var pathsBySession: [String: Set<String>] = [:]
 
     static var projectsRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -246,19 +361,61 @@ actor TranscriptScanner {
         return nil
     }
 
+    /// Drop cached lookups for sessions that have ended.
+    ///
+    /// `searchCache` is `static` — it outlives every scanner instance, so
+    /// nothing else would ever release it.
+    private static func forgetSearches(keeping live: Set<String>) {
+        searchLock.lock()
+        defer { searchLock.unlock() }
+        searchCache = searchCache.filter { live.contains($0.key) }
+    }
+
+    /// Dedupe identity for one record.
+    ///
+    /// Falls back to the record's own `uuid` when a record carries neither
+    /// `message.id` nor `requestId`: those are real, separately charged
+    /// responses, and collapsing them all onto the key `"|"` kept only the
+    /// single largest of them for the whole file. Every record in this
+    /// machine's `~/.claude/projects` carries a `uuid`, and the last resort — a
+    /// fresh identity — can only over-count by failing to dedupe, never
+    /// under-count by merging two genuinely separate charges.
+    private static func dedupeKey(record: [String: Any], message: [String: Any]) -> String {
+        let messageId = message["id"] as? String ?? ""
+        let requestId = record["requestId"] as? String ?? ""
+        if messageId.isEmpty && requestId.isEmpty {
+            return "uuid:" + (record["uuid"] as? String ?? UUID().uuidString)
+        }
+        return "\(messageId)|\(requestId)"
+    }
+
     /// Forget state for sessions that are no longer live.
     ///
     /// Without this, `offsets`/`cache`/`seen` grow for the lifetime of the
     /// process — an unbounded leak in an app whose entire purpose is reclaiming
     /// memory — and closed sessions keep contributing to the "tokens across
     /// open sessions" total.
+    ///
+    /// The keep-set is the set of paths the live sessions actually touched, not
+    /// `<sessionId>.jsonl`. Subagent transcripts are named `agent-<hex>.jsonl`
+    /// and `journal.jsonl` under `<sessionId>/subagents/**`, so a keep-set built
+    /// from session ids matched none of them and every prune wiped their scan
+    /// state — after which the next poll re-read every subagent file from byte
+    /// zero, forever.
     func prune(keeping live: Set<String>) {
-        let keep = Set(live.map { Self.transcriptURL(cwd: "", sessionId: $0).lastPathComponent })
-        for key in offsets.keys where !keep.contains(URL(fileURLWithPath: key).lastPathComponent) {
+        pathsBySession = pathsBySession.filter { live.contains($0.key) }
+        // A pass that did not visit every live session has an incomplete
+        // keep-set, and pruning against it would drop offsets we are about to
+        // need. Skipping one prune costs nothing; a wrong one costs a full
+        // re-read of the corpus.
+        guard live.allSatisfy({ pathsBySession[$0] != nil }) else { return }
+        let keep = pathsBySession.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+        for key in offsets.keys where !keep.contains(key) {
             offsets.removeValue(forKey: key)
             cache.removeValue(forKey: key)
             seen.removeValue(forKey: key)
         }
+        Self.forgetSearches(keeping: live)
     }
 
     /// Totals for one session, across its parent transcript and every subagent
@@ -270,7 +427,9 @@ actor TranscriptScanner {
     func totals(cwd: String, sessionId: String) -> TokenTotals {
         var combined = TokenTotals()
         let parent = Self.transcriptURL(cwd: cwd, sessionId: sessionId)
-        for url in Self.transcriptURLs(cwd: cwd, sessionId: sessionId) {
+        let urls = Self.transcriptURLs(cwd: cwd, sessionId: sessionId)
+        pathsBySession[sessionId] = Set(urls.map(\.path))
+        for url in urls {
             var part = totals(at: url)
             if url != parent { part.subagentTokens = part.total }
             combined = combined + part
@@ -321,8 +480,12 @@ actor TranscriptScanner {
             let model = message["model"] as? String ?? ""
             // Synthetic records carry no real usage.
             if model == "<synthetic>" { continue }
+            let name = model.isEmpty ? "" : model.replacingOccurrences(of: "[1m]", with: "")
 
+            // Only the top-level counts. `message.usage.iterations[]` repeats
+            // them per iteration, so summing that array double-counts.
             let contribution = Contribution(
+                model: name,
                 input: usage["input_tokens"] as? Int ?? 0,
                 output: usage["output_tokens"] as? Int ?? 0,
                 cacheRead: usage["cache_read_input_tokens"] as? Int ?? 0,
@@ -330,18 +493,21 @@ actor TranscriptScanner {
             )
             if contribution.sum == 0 { continue }
 
-            let messageId = message["id"] as? String ?? ""
-            let requestId = obj["requestId"] as? String ?? ""
-            let dedupeKey = "\(messageId)|\(requestId)"
+            let dedupeKey = Self.dedupeKey(record: obj, message: message)
 
             if let previous = seenHere[dedupeKey] {
                 // Streaming rewrites a message with growing counts. Adopt only
-                // the larger snapshot, backing out the one it supersedes.
+                // the larger snapshot, backing out the one it supersedes — from
+                // the bucket it was actually filed under, which a retry served
+                // by a different model makes different from this record's.
                 guard contribution.sum > previous.sum else { continue }
                 totals.input -= previous.input
                 totals.output -= previous.output
                 totals.cacheRead -= previous.cacheRead
                 totals.cacheCreation -= previous.cacheCreation
+                if !previous.model.isEmpty {
+                    totals.byModel[previous.model, default: 0] -= previous.sum
+                }
             } else {
                 totals.messages += 1
             }
@@ -350,12 +516,8 @@ actor TranscriptScanner {
             totals.output += contribution.output
             totals.cacheRead += contribution.cacheRead
             totals.cacheCreation += contribution.cacheCreation
-            if !model.isEmpty {
-                let name = model.replacingOccurrences(of: "[1m]", with: "")
+            if !name.isEmpty {
                 totals.models.insert(name)
-                if let previous = seenHere[dedupeKey] {
-                    totals.byModel[name, default: 0] -= previous.sum
-                }
                 totals.byModel[name, default: 0] += contribution.sum
             }
             seenHere[dedupeKey] = contribution

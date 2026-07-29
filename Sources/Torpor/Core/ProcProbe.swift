@@ -120,14 +120,24 @@ enum ProcProbe {
 
     // MARK: - Argument vector capture
 
-    /// Full argv of a running process via `KERN_PROCARGS2`.
+    /// A process's captured command line.
+    struct Arguments {
+        /// The path the kernel actually exec'd. Always absolute and always the
+        /// real binary — argv[0] is whatever the parent chose to pass, commonly
+        /// a bare `claude` that revive would have to re-resolve off whatever
+        /// PATH the new shell happens to have after cd-ing into the project.
+        var executablePath: String
+        var argv: [String]
+    }
+
+    /// Full argv of a running process via `KERN_PROCARGS2`, with the exec path.
     ///
     /// This is what makes revive faithful. `claude --resume` is documented as
     /// lossy — it drops `--mcp-config`, `--settings`, `--plugin-dir`,
     /// `--add-dir` and `--model`. Capturing argv before we terminate a session
     /// lets us replay those flags on the way back up, so a revived session is
     /// configured exactly as the original was.
-    static func arguments(_ pid: Int32) -> [String]? {
+    static func arguments(_ pid: Int32) -> Arguments? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
@@ -143,9 +153,13 @@ enum ProcProbe {
 
         var index = MemoryLayout<Int32>.size
 
-        // Skip the exec path.
+        // Read the exec path rather than discarding it: revive needs a path it
+        // can run without asking a fresh shell's PATH what `claude` means.
+        let pathStart = index
         while index < size, buffer[index] != 0 { index += 1 }
-        // Skip the run of NUL padding that follows it.
+        let executablePath = String(decoding: buffer[pathStart..<index], as: UTF8.self)
+        guard !executablePath.isEmpty else { return nil }
+        // Then the run of NUL padding that follows it.
         while index < size, buffer[index] == 0 { index += 1 }
 
         var args: [String] = []
@@ -166,7 +180,7 @@ enum ProcProbe {
         // replayed on revive. Callers treat nil as "cannot restore this
         // session", which is the correct outcome.
         guard args.count == Int(argc) else { return nil }
-        return args
+        return Arguments(executablePath: executablePath, argv: args)
     }
 
     /// Working directory of a running process, via `proc_pidinfo(PROC_PIDVNODEPATHINFO)`.

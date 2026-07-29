@@ -13,12 +13,32 @@ enum PreviewRenderer {
     static func menuBarSheet(to url: URL) throws {
         let styles = MenuBarStyle.allCases
         let modes = ColorMode.allCases
+        // The states that break the drawing, not just the one that works: fill
+        // past the notch is where a marker drawn in colour vanished under
+        // template rendering, and no-reading is where an empty bar used to be
+        // indistinguishable from 0%.
+        //
+        // The memory figure alternates between the two figures rather than
+        // doubling the row count: what has to be visible is that green and
+        // orange both survive every style and every colour mode, and that the
+        // figure does *not* dim alongside a stale quota reading.
+        let readings: [(label: String, fraction: Double?, percent: String?,
+                        elapsed: Double?, stale: Bool,
+                        figure: MemoryFigure, memory: String)] = [
+            ("past the notch", 0.87, "87%", 0.55, false, .total, "1.24 GB"),
+            ("behind it", 0.30, "30%", 0.55, false, .reclaimable, "412 MB"),
+            ("stale", 0.87, "87%", 0.55, true, .total, "1.24 GB"),
+            ("no reading", nil, nil, nil, false, .reclaimable, "412 MB"),
+        ]
+        let rows = styles.flatMap { style in readings.map { reading in (style, reading) } }
         let rowHeight: CGFloat = 34
-        let labelWidth: CGFloat = 110
-        let columnWidth: CGFloat = 150
+        let labelWidth: CGFloat = 230
+        // Wide enough for the longest item the redesign can produce: bar,
+        // memory figure and countdown. At 150 the columns overlapped.
+        let columnWidth: CGFloat = 210
         let headerHeight: CGFloat = 26
         let width = labelWidth + columnWidth * CGFloat(modes.count)
-        let height = headerHeight + rowHeight * CGFloat(styles.count)
+        let height = headerHeight + rowHeight * CGFloat(rows.count)
 
         let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
@@ -39,22 +59,25 @@ enum PreviewRenderer {
                     at: NSPoint(x: x, y: height - headerHeight + 7), withAttributes: title)
             }
 
-            for (row, style) in styles.enumerated() {
+            for (row, entry) in rows.enumerated() {
+                let (style, reading) = entry
                 let y = height - headerHeight - rowHeight * CGFloat(row + 1)
-                NSString(string: style.label).draw(
+                NSString(string: "\(style.label) · \(reading.label) · \(reading.figure.rawValue)").draw(
                     at: NSPoint(x: 8, y: y + 10), withAttributes: title)
 
                 for (column, mode) in modes.enumerated() {
                     let x = labelWidth + columnWidth * CGFloat(column)
                     let input = MenuBarRenderer.Input(
                         style: style, colorMode: mode, marker: .remaining,
-                        fraction: 0.87, percentText: "87%",
+                        fraction: reading.fraction, percentText: reading.percent,
+                        memoryText: reading.memory,
+                        memoryColor: MenuBarRenderer.memoryTint(for: reading.figure, mode: mode),
                         resetsAt: Date().addingTimeInterval(4_200),
-                        sessionCount: 4, isStale: false,
-                        windowElapsed: 0.55)
+                        sessionCount: 4, isStale: reading.stale,
+                        windowElapsed: reading.elapsed)
 
-                    // Composite is what the menu bar actually draws, so the
-                    // sheet cannot disagree with the real item.
+                    // Composite is the status item's own drawing code, so the
+                    // sheet cannot drift from it.
                     let item = MenuBarRenderer.composite(input)
                     item.draw(at: NSPoint(x: x, y: y + 6), from: .zero,
                               operation: .sourceOver, fraction: 1)
@@ -90,10 +113,31 @@ enum PreviewRenderer {
         }
     }
 
-    private static func write(_ image: NSImage, to url: URL) throws {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else {
+    /// Rasterise at Retina scale.
+    ///
+    /// `tiffRepresentation` of a block-based NSImage renders the handler once
+    /// at 1x, which is the one scale that cannot answer the question the sheet
+    /// exists to answer — whether a 2pt notch and a 1.5pt dash survive on the
+    /// display anyone actually has.
+    private static func write(_ image: NSImage, to url: URL, scale: CGFloat = 2) throws {
+        let size = image.size
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int((size.width * scale).rounded()),
+            pixelsHigh: Int((size.height * scale).rounded()),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { throw PreviewError.noBitmap }
+        // Point size smaller than pixel size is what makes this a 2x rep
+        // rather than a large 1x one.
+        rep.size = size
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: CGRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let png = rep.representation(using: .png, properties: [:]) else {
             throw PreviewError.encodeFailed
         }
         try png.write(to: url)
