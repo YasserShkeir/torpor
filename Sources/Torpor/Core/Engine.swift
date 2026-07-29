@@ -162,6 +162,40 @@ final class Engine: ObservableObject {
             .map { (name: $0.key, window: $0.value) }
     }
 
+    /// Tokens by model across open sessions, largest first.
+    ///
+    /// This is not a quota figure and must never be drawn as one. Anthropic
+    /// publishes no conversion between tokens and plan-limit consumption, and
+    /// the statusline payload carries no model-scoped limits, so a real Fable
+    /// or Opus gauge is only possible on the token source. What this gives you
+    /// is the split of what you have actually spent, read from your own
+    /// transcripts.
+    var modelSplit: [(model: String, tokens: Int, share: Double)] {
+        let totals = weekTokens.byModel
+        let sum = totals.values.reduce(0, +)
+        guard sum > 0 else { return [] }
+        return totals
+            .filter { $0.value > 0 }
+            .sorted { $0.value > $1.value }
+            .map { (model: Self.friendlyModelName($0.key),
+                    tokens: $0.value,
+                    share: Double($0.value) / Double(sum)) }
+    }
+
+    /// `claude-fable-5` reads as "Fable 5", `claude-opus-4-5-20251101` as
+    /// "Opus 4.5". The raw ids are an implementation detail of the transcript.
+    static func friendlyModelName(_ id: String) -> String {
+        var name = id
+        for prefix in ["claude-"] where name.hasPrefix(prefix) {
+            name = String(name.dropFirst(prefix.count))
+        }
+        // Drop a trailing yyyymmdd build stamp.
+        let parts = name.split(separator: "-").filter { !($0.count == 8 && Int($0) != nil) }
+        guard let family = parts.first else { return id }
+        let rest = parts.dropFirst().joined(separator: ".")
+        return (family.capitalized + " " + rest).trimmingCharacters(in: .whitespaces)
+    }
+
     var weekTokens: TokenTotals {
         tokens.values.reduce(TokenTotals(), +)
     }

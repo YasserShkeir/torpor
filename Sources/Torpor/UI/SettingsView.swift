@@ -445,7 +445,7 @@ struct AppearanceTab: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Rows shown when you click the menu bar icon").font(.headline)
                     if engine.availableUsageRows.isEmpty {
-                        Text("The 5-hour and weekly windows always show. Model-specific rows — currently Sonnet and Opus — appear here once Anthropic reports a separate limit for them on your plan.")
+                        Text("The 5-hour and weekly windows always show. A per-model bar (Fable, Opus, Sonnet) needs Anthropic to send a separate limit for that model, and the statusline payload does not carry one. Only the token-based sources above receive model-scoped limits. Until then the panel shows your model split by tokens read from your own transcripts, which is spend rather than quota.")
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {

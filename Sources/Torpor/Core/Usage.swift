@@ -107,6 +107,10 @@ struct TokenTotals: Equatable {
     var cacheCreation: Int = 0
     var messages: Int = 0
     var models: Set<String> = []
+    /// Tokens per model. The scanner already reads `message.model` on every
+    /// record to build `models`; keeping the counts costs nothing and is the
+    /// only per-model figure available without a server.
+    var byModel: [String: Int] = [:]
 
     var billable: Int { input + output }
     var total: Int { input + output + cacheRead + cacheCreation }
@@ -117,7 +121,8 @@ struct TokenTotals: Equatable {
                     cacheRead: a.cacheRead + b.cacheRead,
                     cacheCreation: a.cacheCreation + b.cacheCreation,
                     messages: a.messages + b.messages,
-                    models: a.models.union(b.models))
+                    models: a.models.union(b.models),
+                    byModel: a.byModel.merging(b.byModel, uniquingKeysWith: +))
     }
 }
 
@@ -297,7 +302,12 @@ final class TranscriptScanner {
             totals.cacheRead += contribution.cacheRead
             totals.cacheCreation += contribution.cacheCreation
             if !model.isEmpty {
-                totals.models.insert(model.replacingOccurrences(of: "[1m]", with: ""))
+                let name = model.replacingOccurrences(of: "[1m]", with: "")
+                totals.models.insert(name)
+                if let previous = seenHere[dedupeKey] {
+                    totals.byModel[name, default: 0] -= previous.sum
+                }
+                totals.byModel[name, default: 0] += contribution.sum
             }
             seenHere[dedupeKey] = contribution
         }
