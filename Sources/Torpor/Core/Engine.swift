@@ -47,6 +47,15 @@ final class Engine: ObservableObject {
     /// True while a bulk hibernate is in flight, so the UI can disable the
     /// buttons rather than let a second click race the first.
     @Published private(set) var isBusyWithBatch = false
+    /// Session ids being hibernated right now.
+    ///
+    /// The reconcile loop below drops any record whose session is live again,
+    /// which is how a session revived outside Torpor stops appearing twice. But
+    /// a session being hibernated is *still live* for the whole SIGTERM grace
+    /// period, and the poll timer is shorter than that grace period, so the
+    /// loop was deleting the record the hibernate had just written — taking the
+    /// captured argv with it. Anything mid-flight is exempt.
+    private var inFlightHibernations: Set<String> = []
     /// Registry files exist but none decoded — almost certainly an upstream
     /// format change. Surfaces a banner, and suppresses auto-hide so the app
     /// can never silently vanish from the menu bar on an upstream break.
@@ -171,20 +180,25 @@ final class Engine: ObservableObject {
     /// is the split of what you have actually spent, read from your own
     /// transcripts.
     var modelSplit: [(model: String, tokens: Int, share: Double)] {
-        let totals = weekTokens.byModel
+        Self.split(byModel: weekTokens.byModel)
+    }
+
+    /// Pure, so a listing command can compute it without constructing an Engine.
+    nonisolated static func split(byModel totals: [String: Int])
+        -> [(model: String, tokens: Int, share: Double)] {
         let sum = totals.values.reduce(0, +)
         guard sum > 0 else { return [] }
         return totals
             .filter { $0.value > 0 }
             .sorted { $0.value > $1.value }
-            .map { (model: Self.friendlyModelName($0.key),
+            .map { (model: friendlyModelName($0.key),
                     tokens: $0.value,
                     share: Double($0.value) / Double(sum)) }
     }
 
     /// `claude-fable-5` reads as "Fable 5", `claude-opus-4-5-20251101` as
     /// "Opus 4.5". The raw ids are an implementation detail of the transcript.
-    static func friendlyModelName(_ id: String) -> String {
+    nonisolated static func friendlyModelName(_ id: String) -> String {
         var name = id
         for prefix in ["claude-"] where name.hasPrefix(prefix) {
             name = String(name.dropFirst(prefix.count))
@@ -276,8 +290,15 @@ final class Engine: ObservableObject {
 
     // MARK: - Lifecycle
 
-    init() {
+    /// When false, `refresh()` reads state and computes nothing that acts:
+    /// no notifications, no auto-hibernate, no live fetch, no store pruning,
+    /// no login-item reconcile. For CLI commands that only need to render.
+    private let sideEffects: Bool
+
+    init(sideEffects: Bool = true) {
+        self.sideEffects = sideEffects
         preferences = Preferences.load()
+        guard sideEffects else { refresh(); return }
         reconcileLoginItem()
         notifier.requestAuthorization()
         refresh()
@@ -316,8 +337,11 @@ final class Engine: ObservableObject {
         // themselves — would otherwise sit in both lists forever, offering a
         // Revive button that opens a second terminal on the same conversation.
         let live = Set(loaded.map(\.sessionId))
-        for record in store.sessions where live.contains(record.sessionId) {
-            store.remove(sessionId: record.sessionId)
+        if sideEffects {
+            for record in store.sessions
+            where live.contains(record.sessionId) && !inFlightHibernations.contains(record.sessionId) {
+                store.remove(sessionId: record.sessionId)
+            }
         }
         hibernated = store.sessions
 
@@ -328,7 +352,8 @@ final class Engine: ObservableObject {
             quota = local ?? quota
         }
         statuslineState = StatuslineInstaller.currentState()
-        accountStatus.claudeCodeCredentialsAvailable = CredentialStore.claudeCodeCredentialsPresent()
+        accountStatus.claudeCodeCredentialsAvailable =
+            sideEffects && CredentialStore.claudeCodeCredentialsPresent()
         if let mode = accountStatus.errorMode, mode != preferences.authMode {
             accountStatus.lastFetchError = nil
             accountStatus.errorMode = nil
@@ -342,7 +367,7 @@ final class Engine: ObservableObject {
         }
         refreshAccountStatus()
 
-        if preferences.liveFetchPermitted { Task { await fetchLive() } }
+        if sideEffects, preferences.liveFetchPermitted { Task { await fetchLive() } }
 
         // Transcript scanning is incremental, so this stays cheap even against
         // a 1.3 GB corpus: only bytes appended since the last pass are parsed.
@@ -355,6 +380,7 @@ final class Engine: ObservableObject {
         tokens = tokens.filter { live.contains($0.key) }
         scanner.prune(keeping: live)
 
+        guard sideEffects else { return }
         evaluateNotifications()
         if preferences.autoHibernateEnabled { runAutoHibernate() }
     }
@@ -382,8 +408,14 @@ final class Engine: ObservableObject {
             return
         }
         isBusyWithBatch = true
+        inFlightHibernations.insert(session.sessionId)
         Task {
             let freed = await SessionControl.hibernate(sessions: [session], store: store)
+            // Re-add on the main actor: the batch runs off it, and rewriting the
+            // store from the cooperative pool would use a stale copy and could
+            // resurrect something the user just chose to forget.
+            for record in freed { store.add(record) }
+            inFlightHibernations.remove(session.sessionId)
             isBusyWithBatch = false
             lastError = freed.isEmpty
                 ? "Could not hibernate \(session.projectName): its command line could not be read, so it would not be restorable."
@@ -404,8 +436,11 @@ final class Engine: ObservableObject {
             return
         }
         isBusyWithBatch = true
+        inFlightHibernations.formUnion(targets.map(\.sessionId))
         Task {
             let freed = await SessionControl.hibernate(sessions: targets, store: store)
+            for record in freed { store.add(record) }
+            inFlightHibernations.subtract(targets.map(\.sessionId))
             isBusyWithBatch = false
             let bytes = freed.reduce(UInt64(0)) { $0 + $1.reclaimedBytes }
             lastNotice = freed.isEmpty ? nil
@@ -430,8 +465,11 @@ final class Engine: ObservableObject {
             return
         }
         isBusyWithBatch = true
+        inFlightHibernations.formUnion(targets.map(\.sessionId))
         Task {
             let freed = await SessionControl.hibernate(sessions: targets, store: store)
+            for record in freed { store.add(record) }
+            inFlightHibernations.subtract(targets.map(\.sessionId))
             isBusyWithBatch = false
             if freed.count < targets.count {
                 lastError = "Hibernated \(freed.count) of \(targets.count) sessions; the rest could not be captured."

@@ -156,7 +156,9 @@ struct PopoverView: View {
 
             let week = engine.weekTokens
             if week.total > 0 {
-                Text("\(Fmt.tokens(week.total)) tokens in open sessions · \(Fmt.tokens(week.billable)) billable")
+                Text(week.subagentTokens > 0
+                     ? "\(Fmt.tokens(week.total)) tokens in open sessions · \(Int(Double(week.subagentTokens) / Double(week.total) * 100))% from subagents"
+                     : "\(Fmt.tokens(week.total)) tokens in open sessions · \(Fmt.tokens(week.billable)) billable")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
             }
 
@@ -323,6 +325,9 @@ struct PopoverView: View {
 
             Button("Refresh") { engine.refresh() }
                 .buttonStyle(.borderless).controlSize(.small)
+                // Every hibernate button greys out during a batch; this one did
+                // not, and refresh runs the reconcile loop.
+                .disabled(engine.isBusyWithBatch)
 
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.borderless).controlSize(.small)

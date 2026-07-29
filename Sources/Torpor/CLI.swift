@@ -74,8 +74,16 @@ enum CLI {
         case "--models":
             // Tokens by model across open sessions. Spend, not quota — there is
             // no published conversion from tokens to plan-limit consumption.
-            let engine = MainActor.assumeIsolated { Engine() }
-            let split = MainActor.assumeIsolated { engine.modelSplit }
+            // No Engine: constructing one starts a poll timer, reconciles the
+            // login item, can make a network call, and — with auto-hibernate on
+            // — terminates processes. A listing command must not do any of that.
+            let scanner = TranscriptScanner()
+            var byModel: [String: Int] = [:]
+            for session in SessionRegistry.load() {
+                let totals = scanner.totals(cwd: session.cwd, sessionId: session.sessionId)
+                byModel.merge(totals.byModel, uniquingKeysWith: +)
+            }
+            let split = Engine.split(byModel: byModel)
             if split.isEmpty { print("No token data in open sessions."); break }
             let total = split.reduce(0) { $0 + $1.tokens }
             for row in split {
@@ -252,7 +260,7 @@ enum CLI {
             let app = NSApplication.shared
             app.setActivationPolicy(.prohibited)
             let message = MainActor.assumeIsolated { () -> String in
-                let engine = Engine()
+                let engine = Engine(sideEffects: false)
                 engine.refresh()
                 let saved = engine.preferences.menuBarMetric
                 var rows: [(String, NSImage)] = []
@@ -319,7 +327,7 @@ enum CLI {
             let result = MainActor.assumeIsolated { () -> String? in
                 do {
                     try PreviewRenderer.menuBarSheet(to: base.appendingPathComponent("menubar.png"))
-                    let engine = Engine()
+                    let engine = Engine(sideEffects: false)
                     engine.refresh()
                     try PreviewRenderer.view(PopoverView(engine: engine, openSettings: {}),
                                              size: NSSize(width: 400, height: 700),

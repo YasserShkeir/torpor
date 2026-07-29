@@ -111,6 +111,9 @@ struct TokenTotals: Equatable {
     /// record to build `models`; keeping the counts costs nothing and is the
     /// only per-model figure available without a server.
     var byModel: [String: Int] = [:]
+    /// Of `total`, how much came from subagent transcripts rather than the
+    /// parent conversation.
+    var subagentTokens: Int = 0
 
     var billable: Int { input + output }
     var total: Int { input + output + cacheRead + cacheCreation }
@@ -122,7 +125,8 @@ struct TokenTotals: Equatable {
                     cacheCreation: a.cacheCreation + b.cacheCreation,
                     messages: a.messages + b.messages,
                     models: a.models.union(b.models),
-                    byModel: a.byModel.merging(b.byModel, uniquingKeysWith: +))
+                    byModel: a.byModel.merging(b.byModel, uniquingKeysWith: +),
+                    subagentTokens: a.subagentTokens + b.subagentTokens)
     }
 }
 
@@ -133,9 +137,15 @@ struct TokenTotals: Equatable {
 /// * **Deduplicate on `(message.id, requestId)`, keeping the largest snapshot.**
 ///   Streaming writes the same message repeatedly with growing token counts;
 ///   summing rows double-counts badly.
-/// * **Skip `subagents/*.jsonl`.** On this machine 3,329 of 3,490 transcript
-///   files are subagent transcripts whose usage is already reflected in the
-///   parent session. Counting them inflates totals by ~20x.
+/// * **Read `subagents/**/*.jsonl` too.** An earlier version skipped them,
+///   assuming their usage was already counted in the parent. It isn't. Measured
+///   on one real session: parent 252.1M tokens, subagents 91.1M, and the
+///   `(message.id, requestId)` sets intersect in exactly **zero** places. They
+///   are additive, not duplicated. Worse, some models appear *only* in subagent
+///   transcripts — `claude-haiku-4-5` never shows up in a parent — so skipping
+///   them hid a whole model from the split. The "~20x inflation" that motivated
+///   the skip came from scanning the projects tree unscoped, which picks up
+///   every other session's subagents as well.
 /// * **Classify by each record's own `message.model`.** A session can be served
 ///   by a different model than the one the UI displays.
 final class TranscriptScanner {
@@ -191,6 +201,25 @@ final class TranscriptScanner {
         return derived
     }
 
+    /// Every transcript belonging to a session: the parent, plus each subagent
+    /// transcript under `<sessionId>/subagents/`. Scoped to this session, so it
+    /// never picks up another session's subagents.
+    static func transcriptURLs(cwd: String, sessionId: String) -> [URL] {
+        let parent = transcriptURL(cwd: cwd, sessionId: sessionId)
+        var urls = [parent]
+        let subagents = parent
+            .deletingPathExtension()
+            .appendingPathComponent("subagents", isDirectory: true)
+        if let walker = FileManager.default.enumerator(
+            at: subagents, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]) {
+            for case let url as URL in walker where url.pathExtension == "jsonl" {
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
     private static var searchCache: [String: URL] = [:]
     private static let searchLock = NSLock()
 
@@ -227,9 +256,24 @@ final class TranscriptScanner {
         }
     }
 
-    /// Totals for one session, reading only bytes appended since last call.
+    /// Totals for one session, across its parent transcript and every subagent
+    /// transcript, reading only bytes appended since the last call.
+    ///
+    /// Per-file state is keyed by full path, so adding files needs no other
+    /// change. Subagent transcripts are counted separately as well, because
+    /// "how much of this went to subagents" is worth knowing on its own.
     func totals(cwd: String, sessionId: String) -> TokenTotals {
-        let url = Self.transcriptURL(cwd: cwd, sessionId: sessionId)
+        var combined = TokenTotals()
+        let parent = Self.transcriptURL(cwd: cwd, sessionId: sessionId)
+        for url in Self.transcriptURLs(cwd: cwd, sessionId: sessionId) {
+            var part = totals(at: url)
+            if url != parent { part.subagentTokens = part.total }
+            combined = combined + part
+        }
+        return combined
+    }
+
+    private func totals(at url: URL) -> TokenTotals {
         let key = url.path
 
         guard let handle = try? FileHandle(forReadingFrom: url) else {
@@ -244,7 +288,7 @@ final class TranscriptScanner {
             offsets[key] = 0
             cache[key] = TokenTotals()
             seen[key] = [:]
-            return totals(cwd: cwd, sessionId: sessionId)
+            return totals(at: url)
         }
         guard size > start else { return cache[key] ?? TokenTotals() }
 
