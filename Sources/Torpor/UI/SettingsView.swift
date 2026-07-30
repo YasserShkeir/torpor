@@ -180,10 +180,14 @@ struct AccountTab: View {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
                             Text(option.label).font(.callout).foregroundStyle(.primary)
+                            // "Can get you banned" described a version of this
+                            // that forged a claude-code User-Agent. It doesn't
+                            // any more, and overstating the risk is the same
+                            // failure as understating it.
                             if option.isSanctioned {
-                                Tag("Allowed by Anthropic", color: .green)
+                                Tag("Documented by Anthropic", color: .green)
                             } else {
-                                Tag("Can get you banned", color: .red)
+                                Tag("Undocumented endpoint", color: .orange)
                             }
                         }
                         Text(option.summary)
