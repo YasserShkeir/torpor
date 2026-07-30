@@ -153,19 +153,6 @@ struct PopoverView: View {
 
             if engine.credits.hasAnything { creditsRow }
 
-            // No tilde and no "about": this is Claude Code's own per-session
-            // figure, summed. Torpor prices nothing itself.
-            if engine.weekCostUSD > 0 {
-                HStack {
-                    Text("Open sessions, cost so far").font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("$\(String(format: "%.2f", engine.weekCostUSD))")
-                        .font(.system(size: 10, design: .rounded)).monospacedDigit()
-                }
-                .help("Claude Code computes a cost for each session; Torpor adds up the ones still open. On a Pro or Max plan your subscription covers it — this is what the work was worth, not a bill.")
-            }
-
             if let console = engine.console, console.monthToDateUSD > 0 {
                 HStack {
                     Text("Console spend, month to date").font(.system(size: 10))

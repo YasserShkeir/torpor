@@ -200,18 +200,6 @@ final class Engine: ObservableObject {
         tokens.values.reduce(TokenTotals(), +)
     }
 
-    /// What the open sessions have cost, summed from Claude Code's own
-    /// per-session figures.
-    ///
-    /// Deliberately NOT read from `quota` or the shared statusline snapshot.
-    /// That file is overwritten by whichever session drew its statusline last,
-    /// so its `cost` block is one arbitrary session's running total — showing
-    /// it as an account figure makes the number jump between sessions on every
-    /// poll. Only the per-session files can be summed to something meaningful.
-    var weekCostUSD: Double {
-        sessionUsage.values.compactMap(\.costUSD).reduce(0, +)
-    }
-
     // MARK: - Grouping
 
     /// Sessions for one working directory.

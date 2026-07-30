@@ -317,7 +317,10 @@ final class FrozenStore: @unchecked Sendable {
 
 struct Preferences: Codable {
     // Sessions
-    var pollSeconds: Double = 5
+    /// Sessions are long-lived and their footprint moves slowly, so a tighter
+    /// interval buys nothing an idle-time readout does not already give you —
+    /// it just wakes the CPU and re-walks every process tree more often.
+    var pollSeconds: Double = 30
     var notifyIdleMinutes: Double = 30
     var notifyIdleFootprintMB: Double = 250
     var notifyQuotaPercent: Double = 80
@@ -394,7 +397,7 @@ struct Preferences: Codable {
         // Collapsing them here finishes the migration on load rather than
         // waiting for the user to touch a control that looks broken.
         p.timeMarker = p.timeMarker.showsDuration ? .remaining : .none
-        p.pollSeconds = clamp(p.pollSeconds, 5, 2, 60)
+        p.pollSeconds = clamp(p.pollSeconds, 30, 2, 60)
         p.notifyIdleMinutes = clamp(p.notifyIdleMinutes, 30, 5, 480)
         p.notifyIdleFootprintMB = clamp(p.notifyIdleFootprintMB, 250, 50, 4000)
         p.notifyQuotaPercent = clamp(p.notifyQuotaPercent, 80, 50, 99)
