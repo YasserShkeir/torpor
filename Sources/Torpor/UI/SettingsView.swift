@@ -536,7 +536,7 @@ struct AppearanceTab: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Rows shown when you click the menu bar icon").font(.headline)
                         if engine.availableUsageRows.isEmpty {
-                            Text("The 5-hour and weekly windows always show. A per-model bar (Fable, Opus, Sonnet) needs Anthropic to send a separate limit for that model, and the statusline payload does not carry one. Only the token-based sources on the Account tab receive model-scoped limits. Until then the panel shows your model split by tokens read from your own transcripts, which is spend rather than quota.")
+                            Text("The 5-hour and weekly windows always show. A per-model bar (Fable, Opus, Sonnet) needs Anthropic to send a separate limit for that model, and the statusline payload does not carry one — captured live from Claude Code 2.1.220, it holds five_hour and seven_day and nothing else. Claude.ai shows those rows because it asks an account endpoint Anthropic does not document. Only the token-based sources on the Account tab reach it, and that tab explains what using them risks.")
                                 .font(.caption).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         } else {

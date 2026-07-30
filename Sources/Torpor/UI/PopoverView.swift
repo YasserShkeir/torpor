@@ -147,6 +147,17 @@ struct PopoverView: View {
                 ForEach(engine.visibleScopedRows, id: \.name) { row in
                     GaugeRow(label: row.name, window: row.window, windowLength: 7 * 86_400)
                 }
+                // Claude.ai shows a per-model weekly row and the statusline does
+                // not, so the absence looks like a Torpor bug rather than a
+                // missing field. Say where the rows come from, once, here —
+                // buried in Settings it only got read by people not looking for
+                // it.
+                if engine.visibleScopedRows.isEmpty, engine.preferences.authMode == .statusline {
+                    Text("No per-model rows. Claude Code sends this app the 5-hour and weekly windows only.")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help("Claude.ai shows a weekly row for each model. Those come from an account endpoint Anthropic does not document, which Torpor can only reach with your OAuth token — the source the Account tab warns can get you banned. The statusline payload it reads by default carries two windows and no model breakdown.")
+                }
             } else {
                 notConnectedCard
             }
