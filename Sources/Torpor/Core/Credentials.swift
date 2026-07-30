@@ -138,9 +138,13 @@ struct SubscriptionToken {
     var expiresAt: Date?
     var subscriptionType: String?
 
-    var isExpired: Bool {
+    var isExpired: Bool { expiresWithin(0) }
+
+    /// Whether this token dies within `seconds`. A token with no expiry in it
+    /// is taken at face value, since a pasted one carries none.
+    func expiresWithin(_ seconds: TimeInterval) -> Bool {
         guard let expiresAt else { return false }
-        return expiresAt <= Date()
+        return expiresAt <= Date().addingTimeInterval(seconds)
     }
 }
 
@@ -168,6 +172,28 @@ enum CredentialStore {
         // Stored either as a bare token or as the JSON blob we imported.
         if raw.hasPrefix("{"), let parsed = parseClaudeCodeCredentials(raw) { return parsed }
         return SubscriptionToken(accessToken: raw, expiresAt: nil, subscriptionType: nil)
+    }
+
+    /// The stored token, re-imported from Claude Code if ours has gone stale.
+    ///
+    /// Importing takes a *copy* of Claude Code's credential, and that copy is
+    /// dead within hours: the access token here lasted about eight, while
+    /// Claude Code silently refreshes its own and carries on. So the imported
+    /// copy expires, `fetchSubscription` refuses before it makes a request, and
+    /// the per-model rows never arrive again after the first day. The symptom
+    /// is indistinguishable from the feature not working.
+    ///
+    /// Rather than implement the OAuth refresh grant, take the fresh copy from
+    /// the process that is already maintaining one. Only for `.cliCredentials`:
+    /// a pasted token has no upstream to re-read, so it stays as given and
+    /// expires honestly.
+    static func subscriptionToken(refreshingFromClaudeCode: Bool) -> SubscriptionToken? {
+        let stored = subscriptionToken()
+        guard refreshingFromClaudeCode else { return stored }
+        // A token about to expire mid-request is no more use than an expired one.
+        if let stored, !stored.expiresWithin(60) { return stored }
+        guard let fresh = try? importFromClaudeCode() else { return stored }
+        return fresh
     }
 
     static func clearSubscriptionToken() {

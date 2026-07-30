@@ -705,7 +705,9 @@ final class Engine: ObservableObject {
                 // Belt and braces: no network call on this path without consent,
                 // whichever caller got us here.
                 guard preferences.acknowledgedRiskModes.contains(preferences.authMode),
-                      let token = CredentialStore.subscriptionToken() else { return }
+                      let token = CredentialStore.subscriptionToken(
+                        refreshingFromClaudeCode: preferences.authMode == .cliCredentials)
+                else { return }
                 let (snapshot, balance) = try await api.fetchSubscription(token: token)
                 apiQuota = snapshot
                 quota = Self.merged(statusline: statuslineQuota, api: apiQuota)
