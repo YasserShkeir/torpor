@@ -85,19 +85,34 @@ actor UsageAPI {
 
     // MARK: - Subscription usage (undocumented)
 
+    /// How Torpor identifies itself to Anthropic. Honestly.
+    ///
+    /// This used to send `claude-code/<version>`, scraped from the installed
+    /// CLI so the request would pass for the first-party client. That is the
+    /// pattern Anthropic's anti-spoofing work targeted, and the bans that
+    /// followed were for traffic pretending to be something it wasn't.
+    ///
+    /// Verified against the live endpoint on 2026-07-30: it answers 200 to a
+    /// request that says plainly what it is. The disguise bought nothing and
+    /// was the whole risk, so it is gone.
+    static var userAgent: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        return "Torpor/\(version ?? "dev") (+https://github.com/YasserShkeir/torpor)"
+    }
+
     /// Fetch plan utilisation using a subscription OAuth token.
     ///
-    /// This is the path documented in the UI as carrying account risk. It is
-    /// never called unless the user has explicitly chosen it.
-    func fetchSubscription(token: SubscriptionToken,
-                           clientVersion: String) async throws -> (QuotaSnapshot, CreditBalance) {
+    /// Reads your own usage with your own credential. Still an endpoint
+    /// Anthropic does not document, so it is never called unless the user has
+    /// chosen this source.
+    func fetchSubscription(token: SubscriptionToken) async throws -> (QuotaSnapshot, CreditBalance) {
         guard canFetch else { throw APIError.rateLimited(retryAfter: nextAllowedFetch.timeIntervalSinceNow) }
         guard !token.isExpired else { throw APIError.unauthorized }
 
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
         request.setValue("Bearer \(token.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("claude-code/\(clientVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let (data, response) = try await send(request)
@@ -105,29 +120,59 @@ actor UsageAPI {
 
         consecutiveFailures = 0
         scheduleNext()
-        return try parseSubscription(data)
+        return try Self.parseSubscription(data)
+    }
+
+    /// `resets_at` arrives as RFC3339 with six fractional digits and a
+    /// `+00:00` offset. `ISO8601DateFormatter` without `.withFractionalSeconds`
+    /// returns nil for it outright, and with the option set it still only
+    /// accepts up to three, so the fraction is trimmed before the second
+    /// attempt rather than losing the whole timestamp over sub-millisecond
+    /// precision nothing here needs.
+    private static func timestamp(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: text) { return date }
+
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        if let date = plain.date(from: text) { return date }
+
+        // Trim to milliseconds: 00:00:00.464888+00:00 -> 00:00:00.464+00:00
+        if let dot = text.firstIndex(of: "."),
+           let end = text[dot...].firstIndex(where: { $0 == "+" || $0 == "Z" || $0 == "-" }) {
+            let trimmed = text[..<dot] + text[dot...].prefix(4) + text[end...]
+            return fractional.date(from: String(trimmed))
+        }
+        return nil
     }
 
     /// Tolerant decoding: the payload is undocumented and its shape has changed
     /// more than once, so anything unrecognised degrades to "absent" rather
     /// than failing the whole refresh.
-    private func parseSubscription(_ data: Data) throws -> (QuotaSnapshot, CreditBalance) {
+    nonisolated static func parseSubscription(_ data: Data) throws -> (QuotaSnapshot, CreditBalance) {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw APIError.malformed("not a JSON object")
         }
 
         func window(_ any: Any?) -> QuotaSnapshot.Window? {
             guard let dict = any as? [String: Any] else { return nil }
-            let percentKeys = ["utilization", "used_percentage", "usedPercentage", "percent_used"]
-            guard let percent = percentKeys.compactMap({ dict[$0] as? Double }).first else { return nil }
+            // `percent` is how entries in `limits` carry it, and it arrives as a
+            // JSON integer where the top-level windows use a fractional
+            // `utilization`. NSNumber covers both without a second cast.
+            let percentKeys = ["utilization", "percent", "used_percentage",
+                               "usedPercentage", "percent_used"]
+            guard let percent = percentKeys
+                .compactMap({ (dict[$0] as? NSNumber)?.doubleValue }).first else { return nil }
             var resets: Date?
             for key in ["resets_at", "resetsAt", "reset_at"] {
-                if let seconds = dict[key] as? Double {
-                    resets = Date(timeIntervalSince1970: seconds > 1e11 ? seconds / 1000 : seconds)
+                if let seconds = dict[key] as? NSNumber {
+                    let value = seconds.doubleValue
+                    resets = Date(timeIntervalSince1970: value > 1e11 ? value / 1000 : value)
                     break
                 }
                 if let text = dict[key] as? String {
-                    resets = ISO8601DateFormatter().date(from: text)
+                    resets = Self.timestamp(text)
                     break
                 }
             }
@@ -135,24 +180,43 @@ actor UsageAPI {
         }
 
         var scoped: [String: QuotaSnapshot.Window] = [:]
-        // Model-scoped rows arrive either as top-level `seven_day_<model>` keys
-        // or as a `limits` array of {name, …} objects.
+        // Model-scoped rows have arrived three ways across three shapes of this
+        // payload, and the server still sends the older keys as nulls, so all
+        // three are read rather than the newest alone.
         for (key, value) in root where key.hasPrefix("seven_day_") {
             let name = String(key.dropFirst("seven_day_".count))
                 .replacingOccurrences(of: "_", with: " ").capitalized
             if let w = window(value) { scoped[name] = w }
         }
-        if let limits = root["limits"] as? [[String: Any]] {
-            for limit in limits {
-                guard let name = (limit["name"] as? String) ?? (limit["model"] as? String),
-                      let w = window(limit) else { continue }
-                scoped[name.capitalized] = w
+        // The live shape, captured 2026-07-30: a `limits` array whose entries are
+        // {kind, group, percent, resets_at, scope}. The model name is nested at
+        // scope.model.display_name — there is no `name` or `model` string on the
+        // entry itself, which is why an earlier reading of this array found
+        // nothing and the per-model rows never appeared.
+        var sessionWindow: QuotaSnapshot.Window?
+        var weeklyWindow: QuotaSnapshot.Window?
+        for limit in (root["limits"] as? [[String: Any]]) ?? [] {
+            guard let w = window(limit) else { continue }
+            switch limit["kind"] as? String {
+            case "session":
+                sessionWindow = w
+            case "weekly_all":
+                weeklyWindow = w
+            case "weekly_scoped":
+                let scope = limit["scope"] as? [String: Any]
+                let model = scope?["model"] as? [String: Any]
+                let name = (model?["display_name"] as? String)
+                    ?? (model?["id"] as? String)
+                guard let name, !name.isEmpty else { continue }
+                scoped[name] = w
+            default:
+                continue
             }
         }
 
         let snapshot = QuotaSnapshot(
-            fiveHour: window(root["five_hour"]) ?? window(root["fiveHour"]),
-            sevenDay: window(root["seven_day"]) ?? window(root["sevenDay"]),
+            fiveHour: window(root["five_hour"]) ?? window(root["fiveHour"]) ?? sessionWindow,
+            sevenDay: window(root["seven_day"]) ?? window(root["sevenDay"]) ?? weeklyWindow,
             scoped: scoped,
             capturedAt: Date(),
             sourceSessionId: nil

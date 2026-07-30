@@ -49,16 +49,21 @@ enum AuthMode: String, Codable, CaseIterable, Identifiable {
             return nil
         case .cliCredentials, .pastedToken:
             return """
-            Anthropic's Claude Code terms state that OAuth authentication is intended \
-            exclusively for ordinary use of Claude Code and other native Anthropic \
-            applications, and that third parties may not route requests through Pro or \
-            Max plan credentials. In January 2026 Anthropic deployed anti-spoofing \
-            safeguards and accounts were banned for triggering abuse filters. Using this \
-            option puts your Anthropic account at risk, not Torpor's.
+            This reads your usage from an endpoint Anthropic does not document, using \
+            your own OAuth credential. Anthropic's Claude Code terms say OAuth \
+            authentication is intended for ordinary use of Claude Code and other native \
+            Anthropic applications, and that third parties may not route requests through \
+            Pro or Max plan credentials. Any consequence lands on your account, not \
+            Torpor's.
 
-            Torpor reaches that endpoint the same way the enforcement targeted: it sends \
-            your OAuth token with a claude-code/<version> User-Agent copied from your \
-            installed CLI. That is the behaviour the safeguards look for.
+            What Torpor does not do is pretend to be Claude Code. It used to send a \
+            claude-code/<version> User-Agent copied from your installed CLI, which is \
+            exactly what the January 2026 anti-spoofing safeguards were built to catch. \
+            It now identifies itself as Torpor. The endpoint answers either way, so the \
+            disguise only ever added risk.
+
+            One request every five minutes at most, and only while this source is \
+            selected.
             """
         }
     }

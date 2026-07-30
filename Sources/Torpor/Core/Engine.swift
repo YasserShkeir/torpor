@@ -612,13 +612,6 @@ final class Engine: ObservableObject {
 
     // MARK: - Account
 
-    /// Version string used for the client header when the token path is active.
-    /// Taken from a live session so it tracks whatever is actually installed.
-    private var clientVersion: String {
-        sessions.map(\.version).filter { $0 != "unknown" }
-            .max { $0.compare($1, options: .numeric) == .orderedAscending } ?? "2.1.0"
-    }
-
     private func refreshAccountStatus() {
         switch preferences.authMode {
         case .statusline:
@@ -713,8 +706,7 @@ final class Engine: ObservableObject {
                 // whichever caller got us here.
                 guard preferences.acknowledgedRiskModes.contains(preferences.authMode),
                       let token = CredentialStore.subscriptionToken() else { return }
-                let (snapshot, balance) = try await api.fetchSubscription(
-                    token: token, clientVersion: clientVersion)
+                let (snapshot, balance) = try await api.fetchSubscription(token: token)
                 apiQuota = snapshot
                 quota = Self.merged(statusline: statuslineQuota, api: apiQuota)
                 credits = balance

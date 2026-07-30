@@ -141,20 +141,28 @@ Four sources, and they're not equivalent.
 |---|---|---|
 | **Claude Code statusline** (default) | 5-hour and weekly percentages, reset times | Documented. No credentials, no network calls. |
 | **Console API key** | Month-to-date spend, daily cost, per-model breakdown | Anthropic's documented path. Needs an org account. |
-| **Connect with Claude CLI** | Plan usage, model-scoped limits, credits | Can get your account banned |
-| **Paste subscription token** | Same as above | Can get your account banned |
+| **Connect with Claude CLI** | Plan usage, the per-model rows, credits | Undocumented endpoint, your credential |
+| **Paste subscription token** | Same as above | Undocumented endpoint, your credential |
 
 The default reads a payload Claude Code already hands your statusline. Torpor
 installs a small script that saves those numbers and then runs whatever
 statusline you had, so your prompt looks the same as before.
 
-The two token options reuse the OAuth credential Claude Code keeps for itself and
-call an endpoint Anthropic doesn't document, sending a `claude-code/<version>`
-User-Agent copied from your installed CLI. In January 2026 Anthropic deployed
-anti-spoofing safeguards and banned accounts for that traffic. Torpor can do it,
-because some people want the model-scoped rows badly enough, but it stays inert
-until you pick it and tick a box saying what the risk is. That risk lands on your
-account, not mine.
+That payload carries the 5-hour and weekly windows and nothing else. It has no
+per-model breakdown, which is why there's no Fable or Opus bar on the default
+source however long you stare at it. The rows `/usage` shows you come from your
+account, and only the two token options reach them.
+
+Those reuse the OAuth credential Claude Code keeps for itself, against an endpoint
+Anthropic doesn't document. They stay inert until you pick one and tick a box.
+
+What they no longer do is pretend to be Claude Code. Torpor used to send a
+`claude-code/<version>` User-Agent copied from your installed CLI, which is
+precisely what the January 2026 anti-spoofing safeguards were built to catch.
+It now says `Torpor/<version>` and links here. The endpoint answers the same
+either way, so the disguise was pure downside. It's still an undocumented
+endpoint and Anthropic's terms still say OAuth is for their own clients, so the
+box is still there. That risk lands on your account, not mine.
 
 ## Updating
 
