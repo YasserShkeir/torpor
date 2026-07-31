@@ -44,8 +44,56 @@ jobs:
           sudo xcode-select -s "$LATEST"
           swift --version
 
+      # Absent secrets mean an ad-hoc build rather than a failed release, so a
+      # tag still ships while the certificate is being sorted out. What it must
+      # never do is claim to be notarised when it isn't, which is why the
+      # packaged-app check below asserts on whatever this step decided.
+      - name: Import the signing certificate
+        id: signing
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CERT_P12:-}" ]; then
+            echo "::warning::APPLE_CERT_P12 is not set — this release will be ad-hoc signed and NOT notarised"
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KPASS=$(uuidgen)
+          security create-keychain -p "$KPASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KPASS" "$KEYCHAIN"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -f pkcs12 >/dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Without this codesign blocks on a GUI prompt that no runner can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KPASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          ID=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+               | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          [ -n "$ID" ] || { echo "::error::the imported certificate has no Developer ID Application identity"; exit 1; }
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+          echo "signing as: $ID"
+
       - name: Build
-        run: ./scripts/build-app.sh
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${IDENTITY:-}" ] && [ -n "${NOTARY_KEY_P8:-}" ]; then
+            printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/ac.p8"
+            export NOTARY_KEY_PATH="$RUNNER_TEMP/ac.p8"
+          elif [ -n "${IDENTITY:-}" ]; then
+            echo "::warning::signed but APPLE_API_KEY_P8 is not set — not notarised"
+          fi
+          trap 'rm -f "$RUNNER_TEMP/ac.p8"' EXIT
+          ./scripts/build-app.sh
 
       - name: Package
         id: pkg
@@ -64,6 +112,7 @@ jobs:
       - name: Verify the packaged app
         env:
           V: ${{ steps.v.outputs.version }}
+          SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
         run: |
           set -euo pipefail
           # Verify the copy that ships, not the one on disk: ditto is what
@@ -82,6 +131,20 @@ jobs:
           # An app that cannot print its own version is not worth signing an
           # appcast for.
           verify/Torpor.app/Contents/MacOS/Torpor --version
+
+          # Gatekeeper's own verdict on the copy that ships. `codesign --verify`
+          # above only says the signature is internally consistent; an ad-hoc
+          # build passes it and is still refused on every machine but this one.
+          if [ -n "$SIGNING_IDENTITY" ]; then
+            xcrun stapler validate verify/Torpor.app
+            spctl --assess --type execute --verbose=2 verify/Torpor.app
+            codesign -d --entitlements - --xml verify/Torpor.app 2>/dev/null \
+              | grep -q apple-events \
+              || { echo "::error::packaged app lost the apple-events entitlement — revive would fail"; exit 1; }
+            echo "notarised, stapled, and accepted by Gatekeeper"
+          else
+            echo "::warning::ad-hoc build — users must clear the quarantine flag by hand"
+          fi
 
       # Not notarisation and not a Gatekeeper substitute, but real supply-chain
       # evidence: anyone can verify this exact file came out of this workflow.

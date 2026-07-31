@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Torpor revives a hibernated session by telling Terminal or iTerm to run
+         a command in the tab the session was already living in. Under the
+         hardened runtime that Apple requires for notarisation, sending an Apple
+         event to another application is blocked without this. The user still
+         gets the OS consent dialog on first use; this only makes it possible to
+         ask. NSAppleEventsUsageDescription in Info.plist supplies the wording. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+
+    <!-- Deliberately absent, recorded so nobody adds them speculatively:
+
+         com.apple.security.cs.disable-library-validation
+             Sparkle only needs this when the framework is signed by a different
+             team than the host. Everything here is signed with one identity in
+             one pass, so requiring it would mean something is wrong.
+
+         com.apple.security.cs.allow-unsigned-executable-memory
+         com.apple.security.cs.allow-jit
+             No interpreter, no JIT.
+
+         keychain-access-groups
+             Generic passwords in the user's login keychain need no entitlement.
+             Torpor reads its own item and, on request, Claude Code's; macOS
+             prompts for the second, which is the intended behaviour.
+
+         App Sandbox
+             Torpor's whole job is reading other processes' memory via
+             proc_pid_rusage and signalling them. The sandbox forbids both, so
+             this is a Developer ID app and not a Mac App Store one. -->
+</dict>
+</plist>

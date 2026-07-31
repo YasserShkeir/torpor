@@ -81,13 +81,67 @@ for inner in "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/
     [ -e "$inner" ] && codesign "${SIGN_ARGS[@]}" "$inner" 2>/dev/null || true
 done
 codesign "${SIGN_ARGS[@]}" "$APP/Contents/Frameworks/Sparkle.framework"
-codesign "${SIGN_ARGS[@]}" "$APP"
+
+# Entitlements go on the app alone. Sparkle's helpers get the hardened runtime
+# but not Torpor's Apple-events permission: an updater has no business holding
+# it, and granting it there would widen what a compromised helper could drive.
+APP_SIGN_ARGS=("${SIGN_ARGS[@]}")
+if [ -n "${IDENTITY:-}" ]; then
+    ENTITLEMENTS="$ROOT/Resources/Torpor.entitlements"
+    [ -f "$ENTITLEMENTS" ] || { echo "missing $ENTITLEMENTS" >&2; exit 1; }
+    APP_SIGN_ARGS+=(--entitlements "$ENTITLEMENTS")
+fi
+codesign "${APP_SIGN_ARGS[@]}" "$APP"
 
 codesign --verify --deep --strict "$APP" && echo "    signature verifies"
-[ -n "${IDENTITY:-}" ] && echo "    signed with: $IDENTITY" || echo "    ad-hoc signed"
+if [ -n "${IDENTITY:-}" ]; then
+    echo "    signed with: $IDENTITY"
+    codesign -d --entitlements - --xml "$APP" 2>/dev/null \
+        | grep -q "apple-events" && echo "    apple-events entitlement present" \
+        || { echo "    apple-events entitlement MISSING — revive would fail" >&2; exit 1; }
+else
+    echo "    ad-hoc signed (set IDENTITY to sign with Developer ID)"
+fi
 lipo -archs "$APP/Contents/MacOS/Torpor" | sed 's/^/    architectures: /'
 has_framework_rpath \
     && echo "    framework rpath present" || { echo "    MISSING framework rpath" >&2; exit 1; }
+
+# Notarisation. Apple has to see the build before Gatekeeper will open it on a
+# machine that didn't compile it, and the ticket has to be stapled into the
+# bundle so a first launch works offline.
+#
+# Two ways to authenticate, because CI and a laptop want different things:
+#   NOTARY_PROFILE   a keychain profile from `xcrun notarytool store-credentials`
+#   NOTARY_KEY_ID + NOTARY_ISSUER_ID + NOTARY_KEY_PATH   an App Store Connect key
+# Neither set means skip, so an unsigned local build still works.
+NOTARY_ARGS=()
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+    NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+elif [ -n "${NOTARY_KEY_ID:-}" ] && [ -n "${NOTARY_ISSUER_ID:-}" ] && [ -n "${NOTARY_KEY_PATH:-}" ]; then
+    NOTARY_ARGS=(--key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+fi
+
+if [ ${#NOTARY_ARGS[@]} -gt 0 ]; then
+    if [ -z "${IDENTITY:-}" ]; then
+        echo "==> Notarising: skipped, an ad-hoc signature is always rejected" >&2
+        exit 1
+    fi
+    echo "==> Notarising"
+    NOTARY_ZIP="$(dirname "$APP")/notarize.zip"
+    # ditto, not zip: the symlinks inside Sparkle.framework must survive, and a
+    # dereferenced copy fails the notary's own signature check.
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$NOTARY_ZIP"
+    xcrun notarytool submit "$NOTARY_ZIP" "${NOTARY_ARGS[@]}" --wait
+    rm -f "$NOTARY_ZIP"
+
+    # Staple the bundle, not the zip. Without this the first launch needs a
+    # working network round-trip to Apple, which is exactly when it fails.
+    xcrun stapler staple "$APP"
+    xcrun stapler validate "$APP" && echo "    ticket stapled"
+    # The real question is not whether it is signed but whether Gatekeeper will
+    # run it. spctl answers that one.
+    spctl --assess --type execute --verbose=2 "$APP"
+fi
 
 echo
 echo "Built: $APP"
