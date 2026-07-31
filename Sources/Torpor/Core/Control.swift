@@ -36,7 +36,7 @@ enum SessionControl {
             // Names the flags and never their values: the values are the secret,
             // and this string reaches lastError, notifications and stderr.
             case let .unreplayableFlags(pid, flags):
-                return "pid \(pid) passes \(flags.joined(separator: ", ")) in a form Torpor will not store — inline JSON, which routinely carries API keys, or a value it cannot replay exactly. Reviving without it would silently lose that configuration, so the session is left running. Pass a file path instead to make it hibernatable."
+                return "pid \(pid) passes \(flags.joined(separator: ", ")) as inline JSON, which routinely carries API keys. Torpor won't store that, and won't revive a session missing it, so this one is left running. Pass a file path instead."
             case let .terminateTimedOut(pid):
                 return "Session \(pid) did not exit after SIGTERM."
             case let .launchFailed(message):

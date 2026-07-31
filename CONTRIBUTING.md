@@ -40,8 +40,7 @@ Torpor --render-live /tmp/l.png # render the exact menu bar item, magnified
 ```
 
 `--render-live` exists because a 1.8pt marker inside an 18pt status item cannot
-be debugged by reading source. Three real rendering bugs were found with it in
-about a minute after two rounds of failing to spot them any other way.
+be debugged by reading source.
 
 ## The one hard rule
 

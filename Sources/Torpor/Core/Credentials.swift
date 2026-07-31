@@ -29,41 +29,39 @@ enum AuthMode: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// One line each. These sit in a radio list where the user is comparing
+    /// them, so they say what differs — not how each one works.
     var summary: String {
         switch self {
         case .statusline:
-            return "Reads the usage payload Claude Code already gives your statusline. No credentials, no network calls. Plan limits are only reported for Claude.ai Pro and Max accounts."
+            return "5-hour and weekly usage. No credentials, no network. Pro and Max plans only."
         case .cliCredentials:
-            return "Copies the credentials Claude Code stored in your Keychain — including its refresh token — into Torpor's own Keychain item. macOS will ask your permission."
+            return "Adds per-model rows and credits. Reuses Claude Code's Keychain credential, refresh token included."
         case .pastedToken:
-            return "For a token you already have. Stored in your login Keychain, never written to disk in plain text."
+            return "The same, for a token you paste yourself."
         case .consoleAPIKey:
-            return "Anthropic Console spend: month-to-date cost, a daily chart and a per-model breakdown. Separate from your subscription limits, and needs an organisation account with Admin API access."
+            return "Month-to-date spend, daily chart, per-model cost. Org accounts only."
         }
     }
 
     /// Nil where there is nothing to warn about. Never suppress this in the UI.
+    ///
+    /// Short, but not shortened past the four facts the decision needs: the
+    /// endpoint is undocumented, the credential is theirs, the terms forbid it,
+    /// and the consequence is theirs too.
     var riskNote: String? {
         switch self {
         case .statusline, .consoleAPIKey:
             return nil
         case .cliCredentials, .pastedToken:
             return """
-            This reads your usage from an endpoint Anthropic does not document, using \
-            your own OAuth credential. Anthropic's Claude Code terms say OAuth \
-            authentication is intended for ordinary use of Claude Code and other native \
-            Anthropic applications, and that third parties may not route requests through \
-            Pro or Max plan credentials. Any consequence lands on your account, not \
-            Torpor's.
+            Torpor reads an endpoint Anthropic does not document, using your own OAuth \
+            credential. Anthropic's terms reserve OAuth for their own apps and forbid \
+            third parties routing requests through Pro or Max credentials. Any \
+            consequence lands on your account, not Torpor's.
 
-            What Torpor does not do is pretend to be Claude Code. It used to send a \
-            claude-code/<version> User-Agent copied from your installed CLI, which is \
-            exactly what the January 2026 anti-spoofing safeguards were built to catch. \
-            It now identifies itself as Torpor. The endpoint answers either way, so the \
-            disguise only ever added risk.
-
-            One request every five minutes at most, and only while this source is \
-            selected.
+            Torpor identifies itself honestly, and sends at most one request every five \
+            minutes while this source is selected.
             """
         }
     }

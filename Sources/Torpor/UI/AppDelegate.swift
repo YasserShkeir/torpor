@@ -105,52 +105,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // knowingly — the colour is the whole point of them.
         button.attributedTitle = MenuBarRenderer.attributedTitle(input)
 
+        // Data, not prose. Every line here is a number the item cannot show at
+        // 22pt; what the bar and the white line *mean* is explained once, in
+        // Settings, rather than on every hover.
         let count = engine.sessions.count
-        var tooltip = count == 0
+        var lines = [count == 0
             ? "No Claude Code sessions"
-            : "\(count) session\(count == 1 ? "" : "s") · \(Fmt.bytes(engine.totalFootprint))"
+            : "\(count) session\(count == 1 ? "" : "s") · \(Fmt.bytes(engine.totalFootprint))"]
         // The exact level. The bar carries it as a fill and nothing else does
         // now that the trailing text is the memory figure, so without this line
         // a `.bar` user cannot read their percentage without opening the panel.
         if let percent = input.percentText {
-            tooltip += "\n\(engine.preferences.menuBarMetric.label): \(percent) used"
-        }
-        // Name what the gauge is a proportion of — a bar with no label is
-        // otherwise just a rectangle — what the white line across it means, and
-        // what the number beside it is, since those are two unrelated
-        // quantities in one item and only the colour distinguishes them.
-        tooltip += "\n" + engine.preferences.menuBarMetric.gaugeMeaning
-        if input.showsTimeMarker {
-            tooltip += "\n" + engine.preferences.menuBarMetric.markerMeaning
-        }
-        // The second row is a duration and nothing says what it counts down to,
-        // so the tooltip has to.
-        if let remaining = MenuBarRenderer.durationText(input) {
-            tooltip += "\nThe figure under the bar is how long is left: this window resets in \(remaining)."
-        }
-        if input.memoryText != nil {
-            tooltip += "\n" + engine.preferences.memoryFigure.meaning
+            var line = "\(engine.preferences.menuBarMetric.label): \(percent) used"
+            if let remaining = MenuBarRenderer.durationText(input) { line += " · \(remaining) left" }
+            lines.append(line)
         }
         if let quota = engine.quota {
-            // A dimmed bar has to say why, or it just looks like a rendering
-            // bug: nothing has measured this since the timestamp shown.
-            if input.isUnverified {
-                tooltip += "\nLast read \(Fmt.duration(quota.age)) ago — dimmed until a session refreshes it"
-            }
             // Whichever window the bar is *not* drawing, so one hover still
-            // recovers both. Naming it after the metric line above would have
-            // printed the weekly figure twice for a weekly bar.
+            // recovers both.
             switch engine.preferences.menuBarMetric {
             case .fiveHour:
                 if let week = quota.sevenDay {
-                    tooltip += "\nWeekly limit: \(Int(week.usedPercentage))% used"
+                    lines.append("Weekly limit: \(Int(week.usedPercentage))% used")
                 }
             case .sevenDay:
                 if let five = quota.fiveHour {
-                    tooltip += "\n5-hour limit: \(Int(five.usedPercentage))% used"
+                    lines.append("5-hour limit: \(Int(five.usedPercentage))% used")
                 }
             }
+            // A dimmed bar has to say why, or it just looks like a rendering
+            // bug: nothing has measured this since the timestamp shown.
+            if input.isUnverified {
+                lines.append("Last read \(Fmt.duration(quota.age)) ago — dimmed until a session refreshes it")
+            }
         }
+        // Only when it is not the total already on the first line.
+        if let memory = input.memoryText, engine.preferences.memoryFigure == .reclaimable {
+            lines.append("\(MemoryFigure.reclaimable.label): \(memory)")
+        }
+        let tooltip = lines.joined(separator: "\n")
         button.toolTip = tooltip
 
         button.setAccessibilityLabel("Torpor")

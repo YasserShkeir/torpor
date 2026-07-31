@@ -39,8 +39,8 @@ enum CLI {
       Torpor --version                Print the version
       Torpor --help                   This text
 
-    Memory is reported as phys_footprint, which includes compressed pages.
-    RSS understates an idle session by more than 10x.
+    Memory is phys_footprint, compressed pages included — RSS understates an
+    idle session by more than 10x.
     """
 
     /// Returns true when the argument was handled and the process should exit.

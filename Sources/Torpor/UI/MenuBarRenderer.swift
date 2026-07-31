@@ -80,25 +80,11 @@ enum MenuBarMetric: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// What the gauge is a proportion *of*. A bar with no label is only
-    /// meaningful if the user has been told what fills it — a memory figure
-    /// beside a half-full bar otherwise invites the reasonable question "half
-    /// of what?", which is exactly the confusion this redesign removes.
-    var gaugeMeaning: String {
-        switch self {
-        case .fiveHour:
-            return "The bar is your rolling 5-hour limit: how much of this window you have used."
-        case .sevenDay:
-            return "The bar is your weekly limit across all models: how much of this week you have used."
-        }
-    }
-
-    /// What the white line across the bar means, for the tooltip. The same
-    /// sentence for both cases now — every window this enum offers has a clock
-    /// to pace against, which is the whole reason `hasResetWindow` is gone.
-    var markerMeaning: String {
-        "The white line is the clock. Fill short of it means you are inside the pace this window can carry; past it means you are ahead of the clock."
-    }
+    /// What the white line across the bar means. The one thing on the item that
+    /// nothing else can explain, so it survives where the other captions did
+    /// not — `label` already says what the bar measures.
+    static let markerMeaning =
+        "White line = the clock. Fill behind it means you're on pace."
 }
 
 /// Which memory figure sits to the right of the bar.
@@ -115,37 +101,12 @@ enum MemoryFigure: String, Codable, CaseIterable, Identifiable {
     case reclaimable
     var id: String { rawValue }
 
+    /// Names the figure well enough to be the whole explanation. The captions
+    /// that used to sit under this picker said the same thing at length.
     var label: String {
         switch self {
         case .total:       return "Memory used by all sessions"
         case .reclaimable: return "Memory you could reclaim"
-        }
-    }
-
-    /// What the trailing figure is, for the tooltip and the Settings caption.
-    ///
-    /// Deliberately says nothing about colour or about which side of the item
-    /// it lands on: Monochrome draws no colour, and the Percentage style draws
-    /// no bar to be beside.
-    var meaning: String {
-        switch self {
-        case .total:
-            return "The memory figure is everything your Claude Code sessions are holding right now, compressed pages included."
-        case .reclaimable:
-            return "The memory figure is what hibernating the sessions idle past your threshold would give back."
-        }
-    }
-
-    /// How that figure is drawn, which depends on the colour mode.
-    func colourNote(_ mode: ColorMode) -> String {
-        guard mode != .monochrome else {
-            return "Monochrome draws it in the menu bar's own tint, like everything else — the figure is still whichever one you picked."
-        }
-        switch self {
-        case .total:
-            return "Drawn green, because it is a total rather than a warning."
-        case .reclaimable:
-            return "Drawn orange — the same orange as the Reclaim button in the panel."
         }
     }
 }

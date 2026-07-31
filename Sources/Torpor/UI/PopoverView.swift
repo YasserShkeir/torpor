@@ -132,8 +132,8 @@ struct PopoverView: View {
                                        : Fmt.duration(quota.age))
                         .font(.system(size: 9)).foregroundStyle(.secondary)
                         .help(quota.isStale
-                              ? "Last captured \(Fmt.duration(quota.age)) ago. Refreshes when a session next renders its statusline."
-                              : "Captured \(Fmt.duration(quota.age)) ago.")
+                              ? "Read \(Fmt.duration(quota.age)) ago. Refreshes when a session redraws its statusline."
+                              : "Read \(Fmt.duration(quota.age)) ago.")
                 }
             }
 
@@ -161,7 +161,7 @@ struct PopoverView: View {
                             .multilineTextAlignment(.leading)
                     }
                     .buttonStyle(.plain)
-                    .help("Claude Code hands the statusline two windows and no model breakdown. The per-model rows /usage shows you come from your account, which Torpor can read with your own OAuth credential. Account tab, and read what it says first.")
+                    .help("Per-model rows come from your account, not the statusline. Torpor can read them with your own OAuth credential — see the Account tab first.")
                 }
             } else {
                 notConnectedCard
@@ -340,12 +340,12 @@ struct PopoverView: View {
                             .contentShape(Rectangle())
                             .accessibilityLabel("Forget \(record.name)")
                             .accessibilityHint("Discards the saved command line. The conversation stays on disk but Torpor can no longer reopen it for you.")
-                            .help("Forget this session. The conversation stays on disk, but Torpor loses the saved command line and can no longer reopen it for you.")
+                            .help("Forget this session. The conversation stays on disk; Torpor loses the command line that reopens it.")
                         }
                     }
 
                     if confirmingForget == record.sessionId {
-                        Text("Torpor loses the command line it captured — flags like --mcp-config and --add-dir won't come back. The conversation stays on disk.")
+                        Text("Loses the captured flags — --mcp-config, --add-dir. The conversation stays on disk.")
                             .font(.system(size: 10)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -405,18 +405,18 @@ struct FirstRunView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 verb("pause.circle.fill", .cyan, "Freeze",
-                     "Pauses a session so it uses no CPU. Its memory stays where it is. Thaw puts it back.")
+                     "Pauses a session: no CPU, memory unchanged. Thaw puts it back.")
                 verb("moon.zzz.fill", .orange, "Hibernate",
-                     "Ends a session and gives back all of its memory. The conversation is saved; Revive reopens it in a terminal.")
+                     "Ends a session and gives back its memory. Revive reopens it where it was.")
             }
 
             Divider()
 
-            Text("Usage percentages come from Claude Code's own statusline. Torpor can install a small script that captures them — no credentials, no network calls. Your prompt looks exactly the same.")
+            Text("Usage comes from a small script Torpor adds to your Claude Code statusline. No credentials, no network calls, and your prompt looks the same.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("macOS may ask about notifications. Torpor uses them only for idle sessions and usage warnings.")
+            Text("macOS may ask about notifications — used only for idle sessions and usage warnings.")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -675,7 +675,9 @@ struct InlineBar: View {
                             .frame(width: 2, height: height + 6)
                     }
                     .offset(x: width * position - 1.5)
-                    .help("\(Int(elapsed * 100))% of this window has elapsed")
+                    // The one place the marker is explained outside Settings.
+                    .help("\(Int(elapsed * 100))% of this window has elapsed. "
+                          + MenuBarMetric.markerMeaning)
                 }
             }
         }
@@ -769,7 +771,7 @@ struct ProjectGroupView: View {
                         .disabled(engine.isBusyWithBatch)
                         .accessibilityLabel("Hibernate all idle sessions in \(group.name)")
                         .accessibilityHint("Ends \(group.sessions.count) sessions and frees \(Fmt.bytes(group.totalFootprint))")
-                        .help("Hibernate all \(group.sessions.count) idle session\(group.sessions.count == 1 ? "" : "s") in \(group.name), freeing \(Fmt.bytes(group.totalFootprint)). Each stays one click from coming back.")
+                        .help("Hibernate all \(group.sessions.count) idle session\(group.sessions.count == 1 ? "" : "s") in \(group.name) — frees \(Fmt.bytes(group.totalFootprint)).")
                     }
                 }
             }
@@ -779,7 +781,7 @@ struct ProjectGroupView: View {
                         in: RoundedRectangle(cornerRadius: 5))
 
             if confirming {
-                Text("Frees \(Fmt.bytes(group.totalFootprint)). They move to Hibernated and revive in one click.")
+                Text("Frees \(Fmt.bytes(group.totalFootprint)). Each revives in one click.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .fixedSize(horizontal: false, vertical: true)
@@ -816,11 +818,11 @@ struct SessionRow: View {
     private var hibernateExplanation: String {
         switch session.declaredStatus {
         case "idle":
-            return "Hibernate ends this session and frees \(Fmt.bytes(session.totalFootprint)). The conversation is saved; one click reopens it in a terminal."
+            return "Hibernate ends this session and frees \(Fmt.bytes(session.totalFootprint)). One click reopens it where it was."
         case "busy":
-            return "This session is working. Freeze pauses it; hibernate is only offered once it goes idle."
+            return "Working. Freeze pauses it; hibernate waits until it's idle."
         default:
-            return "Torpor cannot tell whether this session is idle, so it will not end it. Freeze is still available."
+            return "Status unknown, so Torpor won't end it. Freeze still works."
         }
     }
 
@@ -910,7 +912,7 @@ struct SessionRow: View {
                             .font(.system(size: 9))
                             .foregroundStyle(percent >= 90 ? Color.red : Color.orange)
                             .monospacedDigit()
-                            .help("Context window \(Int(percent))% full. Claude Code compacts the conversation when it fills, which costs a pause and some of the earlier detail.")
+                            .help("Context \(Int(percent))% full. Claude Code compacts the conversation when it fills.")
                     }
 
                     if session.childCount > 0 {
@@ -979,14 +981,14 @@ struct SessionRow: View {
             }
 
             if let percent = usage?.contextUsedPercentage, percent >= 80 {
-                Text("Close to the context limit. Claude Code compacts the conversation when it fills — the session keeps going, but it pauses to do it and some earlier detail is summarised away.")
+                Text("Close to the context limit. Claude Code will pause to compact, summarising away some earlier detail.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Text(session.isFrozen
-                 ? "Frozen: using no CPU. Its memory is unchanged — macOS had already compressed most of it."
+                 ? "Frozen: no CPU. Memory unchanged — macOS had already compressed most of it."
                  : hibernateExplanation)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -997,7 +999,7 @@ struct SessionRow: View {
                     Button("Thaw") { engine.thaw(session) }.controlSize(.small)
                 } else {
                     Button("Freeze") { engine.freeze(session) }.controlSize(.small)
-                        .help("Pause this session and its MCP servers. Stops CPU use; frees little memory.")
+                        .help("Pauses this session and its MCP servers. No CPU; frees little memory.")
                 }
 
                 // Only offered for a session the registry reports as idle, and
@@ -1015,7 +1017,7 @@ struct SessionRow: View {
                     } else {
                         Button("Hibernate") { confirmingHibernate = true }
                             .controlSize(.small).tint(.orange)
-                            .help("Ends this session and frees \(Fmt.bytes(session.totalFootprint)). The conversation is saved and reopens in one click.")
+                            .help("Ends this session and frees \(Fmt.bytes(session.totalFootprint)). Reopens in one click.")
                     }
                 } else {
                     Text(session.declaredStatus == "busy"

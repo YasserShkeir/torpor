@@ -626,10 +626,10 @@ final class Engine: ObservableObject {
                 accountStatus.connected = snapshot != nil
                 if let snapshot {
                     accountStatus.detail = snapshot.isStale
-                        ? "Numbers captured \(Fmt.duration(snapshot.age)) ago — they only refresh while a session is drawing its statusline"
-                        : "Reading usage from Claude Code · captured \(Fmt.duration(snapshot.age)) ago"
+                        ? "Read \(Fmt.duration(snapshot.age)) ago — refreshes only while a session draws its statusline"
+                        : "Reading usage from Claude Code · \(Fmt.duration(snapshot.age)) ago"
                 } else if QuotaReader.payloadExists {
-                    accountStatus.detail = "Claude Code is reporting, but sent no plan limits — those exist only for Claude.ai Pro and Max accounts"
+                    accountStatus.detail = "Claude Code sent no plan limits — only Pro and Max accounts have them"
                 } else {
                     accountStatus.detail = "Set up — waiting for a session to draw its statusline"
                 }
@@ -733,13 +733,14 @@ final class Engine: ObservableObject {
     /// tab. "The tab is gone" and "your terminal has no scripting API" are
     /// different facts and only one of them is the user's doing.
     private static func newWindowReason(for record: HibernatedSession, app: String) -> String {
+        let opened = "Opened \(record.name) in a new \(app) window"
         guard let tty = record.tty else {
-            return "Opened \(record.name) in a new \(app) window. Its original terminal had no tty to return to."
+            return "\(opened) — its original terminal had no tty to return to."
         }
         if ProcProbe.ttyIsLive(tty) {
-            return "Opened \(record.name) in a new \(app) window. Its original tab (\(tty)) is still open, but that terminal — VS Code's integrated terminal, or another without a scripting API — can't be targeted from outside. Terminal and iTerm can."
+            return "\(opened) — its old tab (\(tty)) is open, but that terminal can't be scripted from outside. Only Terminal and iTerm can."
         }
-        return "Opened \(record.name) in a new \(app) window. Its original tab (\(tty)) was closed."
+        return "\(opened) — its old tab (\(tty)) was closed."
     }
 
     func disarmConfirmations() {
@@ -796,17 +797,17 @@ final class Engine: ObservableObject {
         guard preferences.authMode == .statusline else { return accountStatus.detail }
         switch statuslineState {
         case .notInstalled:
-            return "Torpor reads your limits from the payload Claude Code already gives your statusline — no credentials, no network calls. Set it up to see them here."
+            return "Torpor reads your limits from Claude Code's statusline. No credentials, no network calls."
         case .needsRepair:
-            return "Usage reporting was installed to a path Claude Code can't execute, so no numbers have arrived. Repair it in Settings."
+            return "Usage reporting sits at a path Claude Code can't run. Repair it in Settings."
         case .foreign:
-            return "You already have a statusline. Torpor can run alongside it — install from Settings and your prompt stays exactly as it is."
+            return "You already have a statusline. Torpor runs alongside it — install from Settings."
         case .settingsUnreadable:
-            return "Torpor can't read ~/.claude/settings.json, so it can't set up usage reporting. Fix or move that file and try again."
+            return "Can't read ~/.claude/settings.json. Fix or move that file, then try again."
         case .installed:
             return QuotaReader.payloadExists
-                ? "Claude Code is reporting, but sent no plan limits. Those exist only for Claude.ai Pro and Max accounts — an API-key account has no plan quota to show."
-                : "Set up and waiting. Numbers appear the next time a session draws its statusline."
+                ? "Claude Code sent no plan limits. Only Pro and Max accounts have them."
+                : "Set up. Numbers arrive the next time a session draws its statusline."
         }
     }
 
@@ -817,8 +818,8 @@ final class Engine: ObservableObject {
     /// as "you have nothing running" while sessions were plainly running.
     var sessionsEmptyExplanation: String {
         registryLooksBroken
-            ? "Torpor found session files it could not read — Claude Code's session format has probably changed. Freezing and hibernating are unavailable until Torpor understands it again; check for an update."
-            : "Nothing running. Torpor shows sessions as soon as you start one."
+            ? "Claude Code's session format has probably changed. Freeze and hibernate are unavailable until Torpor can read it again."
+            : "Nothing running. Sessions appear here as soon as you start one."
     }
 
     /// Whether a subscription token is on disk, regardless of consent state —
@@ -940,8 +941,8 @@ final class Engine: ObservableObject {
             }
             notifier.post(
                 key: "idle-\(session.sessionId)",
-                title: "\(session.projectName) has been idle \(Fmt.duration(idle))",
-                body: "Holding \(Fmt.bytes(session.totalFootprint)) across \(session.childCount + 1) processes. Hibernate to reclaim it."
+                title: "\(session.projectName) idle \(Fmt.duration(idle))",
+                body: "Holding \(Fmt.bytes(session.totalFootprint)). Hibernate to reclaim it."
             )
         }
 
@@ -1005,7 +1006,7 @@ final class Engine: ObservableObject {
                     notifier.post(
                         key: "auto-\(record.sessionId)",
                         title: "Hibernated \(record.name)",
-                        body: "Idle \(Fmt.duration(idle)) — reclaimed \(Fmt.bytes(record.reclaimedBytes)). Revive it from the menu bar."
+                        body: "Idle \(Fmt.duration(idle)) · \(Fmt.bytes(record.reclaimedBytes)) reclaimed. Revive from the menu bar."
                     )
                 } catch {
                     lastError = error.localizedDescription
