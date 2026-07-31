@@ -32,7 +32,9 @@ enum StatuslineInstaller {
     enum State: Equatable {
         case notInstalled
         case installed
-        /// Installed at the old location, which never actually ran.
+        /// settings.json points at a Torpor shim that cannot run: the old
+        /// space-containing location, or a path where the file is no longer
+        /// there. Either way the user's prompt is broken until it is repaired.
         case needsRepair
         case foreign(command: String)   // some other statusline is configured
         /// settings.json exists but is not readable as a JSON object. We must
@@ -43,6 +45,7 @@ enum StatuslineInstaller {
     enum InstallError: LocalizedError {
         case settingsUnparseable(path: String, underlying: String)
         case backupFailed(path: String, underlying: String)
+        case claudeNeverRan(path: String)
 
         var errorDescription: String? {
             switch self {
@@ -50,9 +53,22 @@ enum StatuslineInstaller {
                 return "\(path) is not valid JSON (\(underlying)). Torpor will not overwrite it — fix or move the file, then try again."
             case let .backupFailed(path, underlying):
                 return "Could not back up \(path) (\(underlying)). settings.json was not modified."
+            case let .claudeNeverRan(path):
+                return "Claude Code has not run on this Mac yet — \(path) does not exist. Start a session, then install."
             }
         }
     }
+
+    /// Where the chained command is mirrored inside settings.json.
+    ///
+    /// The shim carries its own copy on its `TORPOR_CHAIN_JSON` line, but that
+    /// copy dies with `~/.torpor` — which is on the Homebrew cask's zap list and
+    /// is what any "remove the leftovers" script deletes — and it is the only
+    /// record of the statusline the user had before Torpor. This second copy
+    /// lives in the same file as the command that points at the shim, so
+    /// whatever survives to describe the install also survives to undo it.
+    private static let mirrorKey = "torpor"
+    private static let chainKey = "previousStatusLineCommand"
 
     /// Resolved so a `settings.json` symlinked into a dotfiles repo — a common
     /// setup for this audience — is written through rather than replaced by a
@@ -100,55 +116,106 @@ enum StatuslineInstaller {
               let command = statusLine["command"] as? String else {
             return .notInstalled
         }
-        if command == Paths.statuslineShim.path { return .installed }
+        if command == Paths.statuslineShim.path {
+            // settings.json can point at a shim that is no longer there —
+            // `rm -rf ~/.torpor`, a cleanup script, the cask's zap — and every
+            // render then runs a missing file. Reporting .installed for that
+            // claims health at the one moment the prompt is actually broken.
+            return FileManager.default.isExecutableFile(atPath: command)
+                ? .installed : .needsRepair
+        }
         // An install pointing at the old, space-containing location never ran:
         // report it as needing repair so the fix is one click away.
         if command == Paths.legacyStatuslineShim.path { return .needsRepair }
         return .foreign(command: command)
     }
 
-    /// Copy settings.json aside before it is touched.
+    /// The chained command mirrored into settings.json, for when the shim that
+    /// normally carries it is gone.
+    private static func mirroredChain(in root: [String: Any]?) -> String? {
+        guard let value = (root?[mirrorKey] as? [String: Any])?[chainKey] as? String,
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    /// Copy settings.json aside before it is touched. Returns where it went, or
+    /// nil when there was nothing to copy.
     ///
     /// Called before the *first* mutation on every path, not just before the
     /// final write — an earlier version backed up after the shim had already
     /// been rewritten and the legacy shim deleted, so "no changes were made"
     /// was untrue by the time it could be printed.
-    private static func backupSettings() throws {
-        guard FileManager.default.fileExists(atPath: settingsURL.path) else { return }
+    @discardableResult
+    private static func backupSettings() throws -> URL? {
+        guard FileManager.default.fileExists(atPath: settingsURL.path) else { return nil }
         let stamp = ISO8601DateFormatter.filenameSafe.string(from: Date())
-        let backup = Paths.support.appendingPathComponent("settings.\(stamp).json.backup")
-        do {
-            try FileManager.default.copyItem(at: settingsURL, to: backup)
-        } catch {
-            throw InstallError.backupFailed(path: settingsURL.path,
-                                            underlying: error.localizedDescription)
+        // `copyItem` throws on an existing destination, so a name two
+        // operations can share is a name that makes the second one fail — and
+        // Install-then-Remove in Settings is two clicks, not two seconds. The
+        // stamp carries milliseconds; the suffix covers the rest.
+        for attempt in 1...20 {
+            let name = attempt == 1
+                ? "settings.\(stamp).json.backup"
+                : "settings.\(stamp)-\(attempt).json.backup"
+            let backup = Paths.support.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: backup.path) { continue }
+            do {
+                try FileManager.default.copyItem(at: settingsURL, to: backup)
+                return backup
+            } catch let error as CocoaError where error.code == .fileWriteFileExists {
+                continue
+            } catch {
+                throw InstallError.backupFailed(path: settingsURL.path,
+                                                underlying: error.localizedDescription)
+            }
         }
+        throw InstallError.backupFailed(path: settingsURL.path,
+                                        underlying: "too many backups share this timestamp")
     }
 
     /// Write the shim and point `settings.json` at it, preserving any existing
-    /// statusline by chaining to it.
-    static func install() throws {
+    /// statusline by chaining to it. Returns where settings.json was backed up,
+    /// or nil when there was no settings.json to back up.
+    @discardableResult
+    static func install() throws -> URL? {
+        // First, before anything is written. `~/.claude` is the one directory
+        // Torpor does not create, and the write below used to fail on its
+        // absence with Foundation's "The folder settings.json doesn't exist" —
+        // after the shim had already landed in ~/.torpor. Its absence also
+        // means there is nothing here to read yet, so refusing is the honest
+        // answer rather than creating a settings.json Claude Code may never
+        // look at.
+        let directory = settingsURL.deletingLastPathComponent()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw InstallError.claudeNeverRan(path: directory.path)
+        }
+
         // Refuses rather than clobbers: reading throws on an unparseable file.
         let existing = try readSettings()
 
         // Recover the chained command from whichever source still holds it.
         // Order matters — on a repair, the old shim is the *only* remaining
-        // copy of CHAIN, so it must be read before it is deleted.
+        // copy of CHAIN, so it must be read before it is deleted, and when
+        // ~/.torpor has been deleted outright the mirror in settings.json is
+        // the last copy there is.
         var chained: String?
         switch currentState() {
         case let .foreign(command):
             chained = command
         case .installed:
-            chained = chainedCommand(in: Paths.statuslineShim)
+            chained = chainedCommand(in: Paths.statuslineShim) ?? mirroredChain(in: existing)
         case .needsRepair:
             chained = chainedCommand(in: Paths.legacyStatuslineShim)
                 ?? chainedCommand(in: Paths.statuslineShim)
+                ?? mirroredChain(in: existing)
         case .notInstalled, .settingsUnreadable:
             break
         }
 
         // Before the first mutation of anything.
-        try backupSettings()
+        let backup = try backupSettings()
 
         try writeShim(chaining: chained)
 
@@ -163,26 +230,55 @@ enum StatuslineInstaller {
         statusLine["type"] = "command"
         statusLine["command"] = Paths.statuslineShim.path
         root["statusLine"] = statusLine
+        if let chained {
+            root[mirrorKey] = [chainKey: chained]
+        } else {
+            root.removeValue(forKey: mirrorKey)
+        }
 
         let out = try JSONSerialization.data(withJSONObject: root,
                                              options: [.prettyPrinted, .sortedKeys])
 
         try out.write(to: settingsURL, options: .atomic)
+        return backup
     }
 
     /// Remove the shim from settings.json, restoring a chained statusline if
     /// one was captured at install time.
     static func uninstall() throws {
         guard var root = try readSettings() else { return }
-        // Removing rewrites settings.json too, and if the shim has been deleted
-        // by hand there is no chained command to restore — so this write can
-        // drop a third-party statusline. It gets the same backup as install.
+        let configured = (root["statusLine"] as? [String: Any])?["command"] as? String
+        let isOurs = configured == Paths.statuslineShim.path
+            || configured == Paths.legacyStatuslineShim.path
+        // Somebody else's statusline is not ours to delete. Without this, an
+        // uninstall run a second time — or run after the user configured their
+        // own — removed the statusLine key outright, which is exactly the
+        // breakage uninstall exists to prevent.
+        guard isOurs || root[mirrorKey] != nil else { return }
+
+        // Removing rewrites settings.json too. It gets the same backup as
+        // install.
         try backupSettings()
-        if let previous = chainedCommand(in: Paths.statuslineShim), !previous.isEmpty {
-            root["statusLine"] = ["type": "command", "command": previous]
-        } else {
-            root.removeValue(forKey: "statusLine")
+
+        if isOurs {
+            // The shim may be gone (~/.torpor deleted), so fall back to the
+            // mirror this file carries.
+            let previous = chainedCommand(in: Paths.statuslineShim) ?? mirroredChain(in: root)
+            if let previous, !previous.isEmpty {
+                // Only `command` is replaced. padding, refreshInterval and
+                // hideVimModeIndicator are the user's — rebuilding the dict
+                // from scratch handed their prompt back with a different
+                // layout and nothing said about why.
+                var statusLine = root["statusLine"] as? [String: Any] ?? [:]
+                statusLine["type"] = "command"
+                statusLine["command"] = previous
+                root["statusLine"] = statusLine
+            } else {
+                root.removeValue(forKey: "statusLine")
+            }
         }
+        root.removeValue(forKey: mirrorKey)
+
         let out = try JSONSerialization.data(withJSONObject: root,
                                              options: [.prettyPrinted, .sortedKeys])
         try out.write(to: settingsURL, options: .atomic)
@@ -206,9 +302,16 @@ enum StatuslineInstaller {
     /// the app would keep showing nothing for them. settings.json is not
     /// touched: it already points at the right path. The chained statusline is
     /// recovered from the shim being replaced, exactly as `install` does.
+    ///
+    /// Only ever runs against a shim that is actually on disk: `currentState`
+    /// reports `.needsRepair` for a missing one, and rewriting *that* here
+    /// would hand the user a chain-less shim — losing their third-party
+    /// statusline — on a background refresh they never asked for.
     static func refreshIfStale() {
         guard currentState() == .installed, !installedShimIsCurrent else { return }
-        try? writeShim(chaining: chainedCommand(in: Paths.statuslineShim))
+        let chained = chainedCommand(in: Paths.statuslineShim)
+            ?? mirroredChain(in: try? readSettings())
+        try? writeShim(chaining: chained)
     }
 
     /// Recover the chained command from a shim on disk.
@@ -417,10 +520,14 @@ enum StatuslineInstaller {
 extension ISO8601DateFormatter {
     /// Colons are legal in HFS+/APFS filenames but display as `/` in Finder,
     /// so timestamps in filenames use a dash-separated form.
+    ///
+    /// Milliseconds because this names a backup: at second resolution, Install
+    /// and Remove clicked one after the other produce the same filename and the
+    /// second operation refuses rather than overwrite the first's recovery copy.
     static let filenameSafe: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withYear, .withMonth, .withDay,
-                                   .withTime, .withTimeZone]
+                                   .withTime, .withTimeZone, .withFractionalSeconds]
         return formatter
     }()
 }

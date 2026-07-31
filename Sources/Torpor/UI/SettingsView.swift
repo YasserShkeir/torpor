@@ -243,7 +243,7 @@ struct AccountTab: View {
                     case .needsRepair:
                         VStack(alignment: .leading) {
                             Text("Usage reporting isn't running").font(.caption).foregroundStyle(.orange)
-                            Text("The script sits at a path Claude Code can't run, so no numbers are arriving. Repair moves it and keeps your statusline.")
+                            Text("The script Claude Code points at is missing, or sits somewhere it can't run it, so no numbers are arriving. Repair rewrites it and keeps whatever statusline you had.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()

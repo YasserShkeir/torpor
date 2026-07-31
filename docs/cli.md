@@ -22,11 +22,12 @@ notification permission, make no network call, and cannot trigger auto-hibernate
 
 | Command | What you get |
 |---|---|
-| `--list` | Every running session: pid, status, idle time, own memory, subtree memory, MCP child count, project |
+| `--list` | Every running session: pid, status, idle time, subtree footprint, subtree resident, MCP child count, project |
 | `--groups` | The same, grouped by working directory, which is how the popover shows it |
 | `--hibernated` | Sessions Torpor has hibernated and can bring back |
-| `--status` | Statusline install state, the 5-hour and weekly percentages, and how old the reading is |
-| `--resume-command <session-id>` | The exact command `--revive` would run. Prints, runs nothing |
+| `--status` | Statusline install state, the 5-hour and weekly percentages, per-model weekly rows if your account has them, and how old the reading is. No percentages until the shim is installed and Claude Code has rendered a prompt |
+| `--preview <pid>` | What hibernating that session would capture and replay. Reads argv, changes nothing |
+| `--resume-command <session-id>` | The command `--revive` would run. Prints, runs nothing |
 | `--version`, `--help` | What they say |
 
 An unrecognised flag prints usage to stderr and exits 2. Only a bare `Torpor`
@@ -54,18 +55,27 @@ crash halfway through cannot leave a terminated session with no way back.
 | `--uninstall-statusline` | Remove it and put your original back |
 | `--emit-shim <path>` | Write the shim to a file so you can read it before installing it |
 
-Run the uninstall **before** deleting the app. Nothing else can restore your
-original statusline once the binary is gone.
+Run the uninstall **before** deleting the app. Nothing else will restore your
+original statusline for you: the command the shim chains to is recorded only in
+`~/.torpor/statusline-shim.sh`, and timestamped copies of your `settings.json`
+sit in `~/Library/Application Support/Torpor` — putting either back is manual,
+and `brew uninstall --zap` deletes both.
 
 ## Before you hibernate something
 
-`--resume-command` prints exactly what a revive would run, and changes nothing:
+`--preview <pid>` shows what a hibernate would capture from a live session, and
+`--resume-command <session-id>` prints the line a revive of a hibernated one
+would run. Neither changes anything:
 
 ```sh
 $ Torpor --resume-command 7b3e4cb7-...
-cd '/Users/you/Documents/GitHub/atlagene' && clear && \
-  /Users/you/.local/bin/claude --resume 7b3e4cb7-... --mcp-config ./mcp.json --model opus
+cd /Users/you/Documents/GitHub/atlagene && claude --resume 7b3e4cb7-... --mcp-config ./mcp.json --model opus
 ```
+
+A revive runs the same thing with a `clear` between the `cd` and the `claude`,
+so the new terminal starts empty — that is the one difference. The working
+directory is quoted only when it holds something a shell would otherwise
+interpret.
 
 `claude --resume` on its own is lossy: it restores the conversation but drops
 `--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir` and `--model`. Torpor
@@ -87,15 +97,21 @@ one it won't end.
 
 ## Memory numbers
 
-Everything reports `phys_footprint`, not RSS.
+Every number Torpor sorts, groups or decides on is `phys_footprint`, not RSS.
 
 RSS excludes compressed pages, and an idle process on macOS is mostly compressed
 pages. One idle session here measured 24 MB by RSS against 319 MB by footprint.
 Footprint is also far steadier between samples: the same process read 320.8,
 321.0 and 320.9 MB on consecutive polls while its RSS swung between 22 and 65 MB.
 
-The subtree figure is the session plus every descendant, which is where most of
-it lives. A session holding 616 MB across 7 processes is normal, and Activity
+`--list` is the one surface that also prints RSS, in the RESIDENT column, for
+diagnostics. Read the two memory columns carefully: FOOTPRINT and RESIDENT are
+the same process tree measured two ways, not the tree against the session on its
+own. A row reading 612 MB and 366 MB is one tree, not two numbers to subtract —
+and the 366 is the one the paragraph above says not to trust.
+
+Both columns are the session plus every descendant, which is where most of it
+lives. A session holding 616 MB across 7 processes is normal, and Activity
 Monitor shows those 6 MCP servers as unrelated `node` rows.
 
 ## Exit codes

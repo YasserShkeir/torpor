@@ -37,6 +37,22 @@ struct PopoverView: View {
                     quotaSection
                     sessionsSection
                     if !engine.hibernated.isEmpty { hibernatedSection }
+                    // An unreadable store rendered as no section at all, which
+                    // reads as "nothing hibernated" — the opposite of the truth,
+                    // at the one moment the records matter.
+                    if let why = engine.hibernationLoadFailure {
+                        VStack(alignment: .leading, spacing: 5) {
+                            SectionHeader("Hibernated")
+                            Text("Couldn't read your hibernated sessions")
+                                .font(.callout).bold()
+                            Text("\(why)\n\nThe file hasn't been overwritten, so the records are still on disk at ~/Library/Application Support/Torpor/hibernated.json.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+                    }
                 }
                 .padding(14)
             }

@@ -2,7 +2,7 @@
 
 ## What Torpor can reach
 
-Torpor is a local macOS app. It has no server and no account. Being honest
+Torpor is a local macOS app. It has no account and no backend. Being honest
 about its access matters more than a version table, because it reaches things
 most menu bar apps do not:
 
@@ -19,12 +19,23 @@ most menu bar apps do not:
 - **Process signals.** Hibernate sends `SIGTERM` (escalating to `SIGKILL`) and
   Freeze sends `SIGSTOP`, to Claude Code sessions and their child processes.
 - **AppleEvents**, to open a terminal window when reviving a session.
+- **`https://yassershkeir.github.io/torpor/appcast.xml`**, once a day, to see
+  whether there is an update. This is the only outbound request Torpor makes on
+  default settings, and Sparkle makes it, not Torpor's own code. It sends what
+  any HTTPS GET sends — your IP address, and a User-Agent naming Torpor and its
+  version. Nothing about your sessions, your usage or your machine goes with it:
+  `SUEnableSystemProfiling` is not set, so Sparkle's optional hardware and OS
+  profile is never appended. To stop it, run
+  `defaults write dev.torpor.Torpor SUEnableAutomaticChecks -bool false`
+  and use **Check for Updates…** in Settings when you want one.
 
 ## What Torpor never does
 
-- **Nothing leaves your machine** on the default settings. No telemetry, no
-  analytics, no crash reporting. This is deliberate: any third-party crash
-  reporter would sweep transcript paths and message content into breadcrumbs.
+- **No transcript content, no token, and no usage data leaves your machine.**
+  No telemetry, no analytics, no crash reporting. This is deliberate: any
+  third-party crash reporter would sweep transcript paths and message content
+  into breadcrumbs. The one outbound request on default settings is the daily
+  update check above, and it carries none of that.
 - **No token is written outside the Keychain**, and none is logged or shown in
   an error message.
 - **The token-based usage sources are inert** until you select one and accept a

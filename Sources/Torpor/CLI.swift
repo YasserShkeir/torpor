@@ -30,14 +30,19 @@ enum CLI {
       Torpor --freeze <pid>           SIGSTOP a session and its MCP subtree
       Torpor --thaw <pid>             SIGCONT it again
       Torpor --hibernate <pid>        Capture argv, terminate, free its memory
+      Torpor --preview <pid>          Show what --hibernate would capture, change nothing
       Torpor --revive <session-id>    Reopen it in a terminal, flags replayed
       Torpor --resume-command <id>    Print what --revive would run
       Torpor --emit-shim <path>       Write the statusline shim for inspection
       Torpor --install-statusline     Install the shim into ~/.claude/settings.json
       Torpor --uninstall-statusline   Remove it, restoring any chained statusline
       Torpor --status                 Show quota and statusline state
-      Torpor --version                Print the version
-      Torpor --help                   This text
+      Torpor --version                Print the version (-v)
+      Torpor --help                   This text (-h)
+
+    DIAGNOSTICS
+      Torpor --render <dir>           Render the popover and settings offscreen
+      Torpor --render-live <path>     Render the menu bar item as it is right now
 
     Memory is phys_footprint, compressed pages included — RSS understates an
     idle session by more than 10x.
@@ -56,7 +61,7 @@ enum CLI {
             print("Torpor \(version ?? "dev")")
 
         case "--list":
-            let sessions = SessionRegistry.load()
+            let sessions = runningSessions()
             if sessions.isEmpty { print("No running Claude Code sessions."); break }
             print(pad("PID", 7) + pad("STATUS", 9) + pad("IDLE", 12)
                   + pad("FOOTPRINT", 11, right: true) + pad("RESIDENT", 11, right: true)
@@ -72,7 +77,7 @@ enum CLI {
                       + "  " + s.projectName)
                 total += s.totalFootprint
             }
-            print("\n\(sessions.count) sessions, \(Fmt.bytes(total)) total footprint")
+            print("\n\(sessions.count) session\(sessions.count == 1 ? "" : "s"), \(Fmt.bytes(total)) total footprint")
 
         case "--groups":
             // Deliberately does NOT construct an Engine: Engine.init starts a
@@ -80,7 +85,7 @@ enum CLI {
             // notification rules and — if the preference is on — runs
             // auto-hibernate, which terminates processes. A listing command
             // must not do any of that.
-            let groups = Engine.group(sessions: SessionRegistry.load())
+            let groups = Engine.group(sessions: runningSessions())
             if groups.isEmpty { print("No running Claude Code sessions."); break }
             for group in groups {
                 let flags = group.statusCounts.sorted { $0.key < $1.key }
@@ -96,6 +101,17 @@ enum CLI {
 
         case "--hibernated":
             let store = HibernationStore()
+            // An unreadable store is empty in memory too, and printing "nothing
+            // hibernated" for it tells the user their records are gone at the
+            // one moment they need them — each holds the only copy of its
+            // session's argv.
+            if let why = store.loadFailure {
+                fail("""
+                Could not read \(Paths.hibernationStore.path): \(why)
+                Torpor has not written over it, so the records are still there. Move that \
+                file aside to start fresh — but the resume commands are in it.
+                """)
+            }
             if store.sessions.isEmpty { print("Nothing hibernated."); break }
             for record in store.sessions {
                 print("\(record.name)  freed \(Fmt.bytes(record.reclaimedBytes))  \(Fmt.duration(Date().timeIntervalSince(record.hibernatedAt))) ago")
@@ -104,8 +120,7 @@ enum CLI {
 
         case "--emit-shim":
             guard let path = arguments.dropFirst(2).first else {
-                FileHandle.standardError.write(Data("--emit-shim needs a path\n".utf8))
-                exit(2)
+                usageError("--emit-shim needs a path")
             }
             do {
                 try StatuslineInstaller.emitShim(to: URL(fileURLWithPath: path))
@@ -117,8 +132,16 @@ enum CLI {
 
         case "--install-statusline":
             do {
-                try StatuslineInstaller.install()
-                print("Installed. A backup of settings.json is in \(Paths.support.path).")
+                // The backup sentence is printed only when a backup was really
+                // written: on a machine with no settings.json there is nothing
+                // to copy, and sending a cautious first-time user to an empty
+                // directory is how they learn to distrust the tool that has
+                // just edited their Claude Code config.
+                if let backup = try StatuslineInstaller.install() {
+                    print("Installed. A backup of settings.json is at \(backup.path).")
+                } else {
+                    print("Installed. You had no settings.json, so there was nothing to back up.")
+                }
             } catch {
                 FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
                 exit(1)
@@ -137,7 +160,8 @@ enum CLI {
             switch StatuslineInstaller.currentState() {
             case .installed: print("statusline: Torpor shim installed")
             case .needsRepair: print("statusline: installed at an unusable path — run --install-statusline to repair")
-            case .notInstalled: print("statusline: not installed")
+            case .notInstalled:
+                print("statusline: not installed — run --install-statusline to read your usage limits (no credentials, no network calls)")
             case let .foreign(command): print("statusline: another command configured (\(command))")
             case let .settingsUnreadable(why): print("statusline: settings.json unreadable — \(why)")
             }
@@ -152,13 +176,21 @@ enum CLI {
                     print("weekly \(name): " + String(format: "%5.1f%%", window.usedPercentage))
                 }
                 print("captured \(Fmt.duration(quota.age)) ago\(quota.isStale ? " (stale)" : "")")
+            } else if !QuotaReader.payloadExists {
+                print("quota: nothing written yet — numbers arrive the next time a session draws its statusline")
+            } else if snapshotIsParseable {
+                // The payload is there and carries no `rate_limits`, which is
+                // the permanent state of an API-key, Bedrock or Vertex account.
+                // "no snapshot yet" told those users to wait for a number that
+                // is never coming.
+                print("quota: Claude Code sent no plan limits. Only Pro and Max accounts have them.")
             } else {
-                print("quota: no snapshot yet")
+                print("quota: \(QuotaReader.snapshotURL.path) is unreadable — delete it and it will be rewritten")
             }
 
         case "--freeze", "--thaw":
             guard let raw = arguments.dropFirst(2).first, let pid = Int32(raw) else {
-                fail("\(command) needs a pid")
+                usageError("\(command) needs a pid")
             }
             let frozen = FrozenStore()
             do {
@@ -175,9 +207,9 @@ enum CLI {
             // Dry run: show exactly what hibernate would capture and what
             // revive would run, without touching the session.
             guard let raw = arguments.dropFirst(2).first, let pid = Int32(raw) else {
-                fail("--preview needs a pid")
+                usageError("--preview needs a pid")
             }
-            guard let session = SessionRegistry.load().first(where: { $0.pid == pid }) else {
+            guard let session = runningSessions().first(where: { $0.pid == pid }) else {
                 fail("pid \(pid) is not a known Claude Code session")
             }
             guard let captured = ProcProbe.arguments(pid),
@@ -214,9 +246,9 @@ enum CLI {
 
         case "--hibernate":
             guard let raw = arguments.dropFirst(2).first, let pid = Int32(raw) else {
-                fail("--hibernate needs a pid")
+                usageError("--hibernate needs a pid")
             }
-            guard let session = SessionRegistry.load().first(where: { $0.pid == pid }) else {
+            guard let session = runningSessions().first(where: { $0.pid == pid }) else {
                 fail("pid \(pid) is not a known Claude Code session")
             }
             // Hibernating is async — it waits out a SIGTERM grace period by
@@ -241,11 +273,11 @@ enum CLI {
             dispatchMain()
 
         case "--revive":
-            guard let id = arguments.dropFirst(2).first else { fail("--revive needs a session id") }
-            let store = HibernationStore()
-            guard let record = store.sessions.first(where: { $0.sessionId.hasPrefix(id) }) else {
-                fail("no hibernated session matching \(id)")
+            guard let id = arguments.dropFirst(2).first else {
+                usageError("--revive needs a session id")
             }
+            let store = HibernationStore()
+            let record = hibernated(matching: id, in: store, flag: "--revive")
             do {
                 try SessionControl.revive(record,
                                           terminal: Preferences.load().launchTerminal,
@@ -256,17 +288,18 @@ enum CLI {
         case "--resume-command":
             // Print what revive *would* run, without running it.
             guard let id = arguments.dropFirst(2).first else {
-                fail("--resume-command needs a session id")
+                usageError("--resume-command needs a session id")
             }
-            guard let record = HibernationStore().sessions.first(where: { $0.sessionId.hasPrefix(id) }) else {
-                fail("no hibernated session matching \(id)")
-            }
+            let record = hibernated(matching: id, in: HibernationStore(),
+                                    flag: "--resume-command")
             print("cd \(shellQuote(record.cwd)) && \(record.resumeCommand)")
 
         case "--render-live":
             // Renders the exact item the menu bar is drawing right now, at 8x,
             // so it can be inspected rather than squinted at.
-            guard let out = arguments.dropFirst(2).first else { fail("--render-live needs a path") }
+            guard let out = arguments.dropFirst(2).first else {
+                usageError("--render-live needs a path")
+            }
             let app = NSApplication.shared
             app.setActivationPolicy(.prohibited)
             let message = MainActor.assumeIsolated { () -> String in
@@ -285,7 +318,13 @@ enum CLI {
                 let input = engine.menuBarInput
 
                 let scale: CGFloat = 6
-                let labelWidth: CGFloat = 150
+                let labelFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+                // Measured, not guessed: a hard-coded 150 painted the bar over
+                // the tail of "Weekly limit (all models)", and that clipped
+                // label shipped in docs/images/menubar.png.
+                let labelWidth = (rows.map {
+                    NSString(string: $0.0).size(withAttributes: [.font: labelFont]).width
+                }.max() ?? 140) + 20
                 let rowHeight = (rows.first?.1.size.height ?? 22) * scale + 8
                 let widest = rows.map(\.1.size.width).max() ?? 60
                 let big = NSSize(width: labelWidth + widest * scale + 16,
@@ -295,7 +334,7 @@ enum CLI {
                     rect.fill()
                     NSGraphicsContext.current?.imageInterpolation = .none
                     let attrs: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                        .font: labelFont,
                         .foregroundColor: NSColor.white,
                     ]
                     for (index, row) in rows.enumerated() {
@@ -327,7 +366,7 @@ enum CLI {
         case "--render":
             // Offscreen UI render, for review and for CI diffing.
             guard let dir = arguments.dropFirst(2).first else {
-                fail("--render needs an output directory")
+                usageError("--render needs an output directory")
             }
             let base = URL(fileURLWithPath: dir)
             try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -359,20 +398,95 @@ enum CLI {
             print("Rendered menubar.png, popover.png, settings.png into \(dir)")
 
         default:
-            // Anything flag-shaped that we don't recognise is an error, not an
-            // invitation to launch the GUI. `Torpor --version` used to install a
-            // status item and block the shell until killed.
+            // Nothing we don't recognise may reach the GUI — not a stray flag,
+            // and not a subcommand shape either. `Torpor list` used to launch a
+            // second menu bar instance that never returned to the shell, with a
+            // poll timer, a notification prompt and, if the preference is on,
+            // auto-hibernate, which terminates sessions. Only a bare `Torpor`
+            // gets the app, which is what docs/cli.md promises.
             if command.hasPrefix("-") {
-                FileHandle.standardError.write(Data("Unknown option: \(command)\n\n\(usage)\n".utf8))
-                exit(2)
+                usageError("Unknown option: \(command)\n\n\(usage)")
             }
-            return false
+            // The suggestion is read back out of the usage text so a flag added
+            // there is offered here without a second list to keep in step.
+            if usage.contains(" --\(command) ") {
+                usageError("Torpor takes flags, not subcommands — did you mean --\(command)?")
+            }
+            usageError("Torpor takes flags, not subcommands — try --list, or --help for all of them.")
         }
         return true
     }
 
+    /// Sessions, or a hard stop when the registry is there and unreadable.
+    ///
+    /// `load()` throws the outcome away, so a schema change upstream came out as
+    /// "No running Claude Code sessions." — the app confidently asserting the
+    /// opposite of the truth. The popover has an orange card for this state; the
+    /// CLI had nothing.
+    private static func runningSessions() -> [Session] {
+        let result = SessionRegistry.loadDetailed()
+        guard !result.looksBroken else {
+            fail("""
+            Read \(result.filesSeen) session file\(result.filesSeen == 1 ? "" : "s") in \
+            \(SessionRegistry.directory.path) and understood none of them.
+            Claude Code's session format has probably changed. Check for a Torpor update.
+            """)
+        }
+        return result.sessions
+    }
+
+    /// Resolve a session-id prefix to exactly one hibernated record.
+    ///
+    /// An empty id used to match the first record, because `"".hasPrefix` is
+    /// true for everything — so `--revive "$SESSION"` with the variable unset
+    /// opened a terminal for a session the user never named. An ambiguous
+    /// prefix picked whichever record happened to be first in the file.
+    private static func hibernated(matching id: String,
+                                   in store: HibernationStore,
+                                   flag: String) -> HibernatedSession {
+        guard !id.isEmpty else { usageError("\(flag) needs a session id") }
+        // Case-insensitive: a session id copied out of a UI that upper-cased it
+        // otherwise matched nothing at all.
+        let prefix = id.lowercased()
+        let matches = store.sessions.filter { $0.sessionId.lowercased().hasPrefix(prefix) }
+        guard let record = matches.first else {
+            // "no hibernated session matching X" would be a lie when the file
+            // holding them simply did not decode.
+            if let why = store.loadFailure {
+                fail("could not read \(Paths.hibernationStore.path): \(why)")
+            }
+            fail("no hibernated session matching \(id)")
+        }
+        guard matches.count == 1 else {
+            fail("\(id) matches \(matches.count) hibernated sessions:\n"
+                 + matches.map { "  \($0.sessionId)  \($0.name)" }.joined(separator: "\n"))
+        }
+        return record
+    }
+
+    /// Whether the statusline snapshot is at least well-formed JSON.
+    ///
+    /// Tells "written, but this account has no plan limits" — permanent for an
+    /// API-key, Bedrock or Vertex account — apart from "written and corrupt",
+    /// which `QuotaReader.read()` reports as the same nil.
+    private static var snapshotIsParseable: Bool {
+        guard let data = try? Data(contentsOf: QuotaReader.snapshotURL) else { return false }
+        return (try? JSONSerialization.jsonObject(with: data)) != nil
+    }
+
+    /// The command ran and failed.
     private static func fail(_ message: String) -> Never {
         FileHandle.standardError.write(Data("\(message)\n".utf8))
         exit(1)
+    }
+
+    /// The command was never run, because the arguments were wrong.
+    ///
+    /// Separate exit code because docs/cli.md promises one: a script has to be
+    /// able to tell "I passed garbage" (2) from "the freeze genuinely failed"
+    /// (1), and every missing-argument guard used to exit 1.
+    private static func usageError(_ message: String) -> Never {
+        FileHandle.standardError.write(Data("\(message)\n".utf8))
+        exit(2)
     }
 }

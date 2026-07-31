@@ -35,6 +35,13 @@ final class Engine: ObservableObject {
 
     @Published private(set) var sessions: [Session] = []
     @Published private(set) var hibernated: [HibernatedSession] = []
+    /// Why the hibernation store could not be read, when it could not be.
+    ///
+    /// An unreadable store is not an empty one, and the difference matters more
+    /// here than anywhere else in the app: each record holds the only copy of
+    /// the argv a revive rebuilds from. Reporting "nothing hibernated" would
+    /// tell someone their sessions are gone at the exact moment they are not.
+    @Published private(set) var hibernationLoadFailure: String?
     @Published private(set) var quota: QuotaSnapshot?
     /// The two sources are kept apart and merged into `quota` on every write.
     /// The statusline snapshot refreshes whenever a session draws its prompt
@@ -349,6 +356,7 @@ final class Engine: ObservableObject {
             SessionControl.sweepFrozen(store: frozenStore)
         }
         hibernated = store.sessions
+        hibernationLoadFailure = store.loadFailure
 
         // The statusline snapshot is always read: it costs nothing and it is
         // the fallback whenever a live fetch is unavailable or rate limited.
@@ -799,7 +807,7 @@ final class Engine: ObservableObject {
         case .notInstalled:
             return "Torpor reads your limits from Claude Code's statusline. No credentials, no network calls."
         case .needsRepair:
-            return "Usage reporting sits at a path Claude Code can't run. Repair it in Settings."
+            return "The script Claude Code points at is missing or somewhere it can't run it. Repair it in Settings."
         case .foreign:
             return "You already have a statusline. Torpor runs alongside it — install from Settings."
         case .settingsUnreadable:

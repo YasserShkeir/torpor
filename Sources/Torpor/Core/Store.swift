@@ -501,6 +501,16 @@ final class HibernationStore: @unchecked Sendable {
 
     var sessions: [HibernatedSession] { lock.withLock { storage } }
 
+    /// Why the last load failed, or nil when the file was read — or was simply
+    /// absent, which is not a failure.
+    ///
+    /// Exposed because `sessions` is empty in both cases and the two mean
+    /// opposite things: "nothing is hibernated" against "the file holding the
+    /// only copy of those sessions' argv could not be read, and has not been
+    /// overwritten". A caller that cannot tell them apart tells the user their
+    /// records do not exist at the moment they most need to be told otherwise.
+    var loadFailure: String? { lock.withLock { failure } }
+
     init() { reload() }
 
     func reload() { lock.withLock { loadLocked() } }

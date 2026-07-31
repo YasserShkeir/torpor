@@ -69,7 +69,7 @@ xattr -dr com.apple.quarantine /Applications/Torpor.app
 ```
 
 Torpor is ad-hoc signed, not notarised, so macOS won't open it until that marker
-is gone. If you already got the warning, that command fails — use **System
+is gone. If that command reports `Operation not permitted`, use **System
 Settings → Privacy & Security → Open Anyway** instead.
 
 Building it yourself skips all of that:
@@ -79,7 +79,9 @@ git clone https://github.com/YasserShkeir/torpor.git
 cd torpor && ./scripts/build-app.sh && open dist/Torpor.app
 ```
 
-macOS 14+ to run, Swift 6.2 to build.
+macOS 14+ to run. `swift build` wants Swift 6.0 or newer; the universal build in
+`./scripts/build-app.sh` goes through Xcode's build system, which wants Swift
+6.2.
 
 Reviving a session asks permission to control Terminal or iTerm, and asks again
 after each update, because every ad-hoc build looks like a new app. A Developer
@@ -110,15 +112,16 @@ processes by roughly ten times, which is why this exists.
 
 | Source | Gives you | Standing |
 |---|---|---|
-| **Claude Code statusline** (default) | 5-hour and weekly windows, reset times, exact cost | Documented. No credentials, no network calls |
+| **Claude Code statusline** (default) | 5-hour and weekly windows, reset times, exact cost | Documented. No credentials, no usage data over the network |
 | **Console API key** | Month-to-date spend, daily cost, per-model breakdown | Anthropic's documented path. Org accounts only |
 | **Connect with Claude CLI** | The above plus per-model rows and credits | Undocumented endpoint, your credential |
 | **Paste subscription token** | Same | Undocumented endpoint, your credential |
 
 The default reads the payload Claude Code already hands your statusline, via a
 small script that saves what Torpor needs and then runs whatever statusline you
-had. Your prompt looks the same. That payload carries a cost figure Claude Code
-has already computed, so Torpor prices nothing itself.
+had. Your prompt looks the same — or, if you had no statusline, you get a
+minimal one showing the model and folder. That payload carries a cost figure
+Claude Code has already computed, so Torpor prices nothing itself.
 
 It carries no per-model limit, which is why there's no Fable or Opus bar on the
 default source. Those rows come from your account, and only the two token
@@ -132,13 +135,22 @@ Torpor updates itself, checking a static appcast once a day. Updates carry an
 EdDSA signature checked against a key built into the app, which is what vouches
 for them given macOS can't.
 
-Run the first line **before** deleting the app — nothing else can put your
-statusline back once the binary is gone.
+Uninstalling has an order to it. `--uninstall-statusline` puts your original
+statusline back in `~/.claude/settings.json`; run it first, and only run the
+`brew` line if it succeeded — that is what the `&&` is doing. `--zap` deletes
+`~/.torpor` and Application Support, which hold the shim your `settings.json`
+points at, the only record of the statusline it was chaining to, and every
+backup. In the other order Claude Code fails on every prompt render and there is
+nothing left to restore from.
 
 ```sh
-/Applications/Torpor.app/Contents/MacOS/Torpor --uninstall-statusline
-brew uninstall --zap --cask torpor
+/Applications/Torpor.app/Contents/MacOS/Torpor --uninstall-statusline && \
+  brew uninstall --zap --cask torpor
 ```
+
+If the first command fails, stop and fix that. `brew uninstall --cask torpor`
+without `--zap` is safe either way — it leaves the shim in place, so your
+statusline keeps working.
 
 ## Docs
 
@@ -150,8 +162,15 @@ brew uninstall --zap --cask torpor
 
 Bug reports are the useful thing. Torpor reads undocumented Claude Code
 internals and upstream ships around six releases a week, so it will break and I
-often won't have noticed. Include `Torpor --list`, `Torpor --status` and your
-Claude Code version. More in [CONTRIBUTING.md](CONTRIBUTING.md).
+often won't have noticed. Include the output of `--list` and `--status`, and
+your Claude Code version. The cask puts nothing on `PATH`, so that is:
+
+```sh
+/Applications/Torpor.app/Contents/MacOS/Torpor --list
+```
+
+[docs/cli.md](docs/cli.md) has an alias for it. More in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 One hard rule for pull requests: no code path reads a subscription token or
 contacts that endpoint without an explicit opt-in.

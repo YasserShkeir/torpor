@@ -9,10 +9,14 @@ releases a week — so things break, and I often will not have noticed.
 Include the output of:
 
 ```sh
-Torpor --list
-Torpor --status
-Torpor --version
+/Applications/Torpor.app/Contents/MacOS/Torpor --list
+/Applications/Torpor.app/Contents/MacOS/Torpor --status
+/Applications/Torpor.app/Contents/MacOS/Torpor --version
 ```
+
+The cask installs nothing on `PATH`, so the full bundle path is the invocation;
+[docs/cli.md](docs/cli.md) has an alias if you use it more than once. If you
+built from source, it is `.build/debug/Torpor` instead.
 
 If sessions are missing or the numbers look wrong after a Claude Code update,
 that is exactly the report worth filing. Say which Claude Code version you are
@@ -28,15 +32,18 @@ swift build
 ./scripts/build-app.sh     # produces dist/Torpor.app
 ```
 
-Requires macOS 14+ and a Swift 6 toolchain (Xcode 16+). There is no Xcode
-project — it is a Swift package.
+Requires macOS 14+. Plain `swift build` works on Swift 6.0 or newer.
+`build-app.sh` builds universal via `swift build --arch`, which routes through
+Xcode's build system, and that rejects the package's `swiftLanguageMode` on
+older toolchains — use Swift 6.2. CI selects the newest Xcode on the runner for
+the same reason. There is no Xcode project — it is a Swift package.
 
-Useful while developing:
+Useful while developing. `swift build` leaves the binary at `.build/debug/Torpor`:
 
 ```sh
-Torpor --preview <pid>          # what hibernate would capture, no side effects
-Torpor --render /tmp/ui         # render the UI to PNG
-Torpor --render-live /tmp/l.png # render the exact menu bar item, magnified
+.build/debug/Torpor --preview <pid>          # what hibernate would capture, no side effects
+.build/debug/Torpor --render /tmp/ui         # render the UI to PNG
+.build/debug/Torpor --render-live /tmp/l.png # render the exact menu bar item, magnified
 ```
 
 `--render-live` exists because a 1.8pt marker inside an 18pt status item cannot
