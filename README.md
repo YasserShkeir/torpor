@@ -68,9 +68,15 @@ Then, **before opening it the first time**:
 xattr -dr com.apple.quarantine /Applications/Torpor.app
 ```
 
-Torpor is ad-hoc signed, not notarised, so macOS won't open it until that marker
-is gone. If that command reports `Operation not permitted`, use **System
-Settings → Privacy & Security → Open Anyway** instead.
+Without it macOS says it *could not verify Torpor is free of malware*. That
+wording is alarming and it means something narrower than it sounds: Torpor is
+signed with an Apple Developer ID, but Apple has not yet issued the notarisation
+ticket that lets Gatekeeper confirm it. The submission is sitting in Apple's
+queue — first ones from a new developer account can be held for days — and this
+line goes away when it clears.
+
+If that command reports `Operation not permitted`, macOS has already locked the
+marker. Use **System Settings → Privacy & Security → Open Anyway** instead.
 
 Building it yourself skips all of that:
 
@@ -83,9 +89,9 @@ macOS 14+ to run. `swift build` wants Swift 6.0 or newer; the universal build in
 `./scripts/build-app.sh` goes through Xcode's build system, which wants Swift
 6.2.
 
-Reviving a session asks permission to control Terminal or iTerm, and asks again
-after each update, because every ad-hoc build looks like a new app. A Developer
-ID fixes that; the application is in with Apple.
+Reviving a session asks permission to control Terminal or iTerm. Builds now
+carry a stable Developer ID, so unlike earlier releases it asks once rather than
+again after every update.
 
 ## Freezing doesn't free memory, and I shipped it saying so
 

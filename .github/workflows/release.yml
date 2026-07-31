@@ -78,20 +78,34 @@ jobs:
           echo "identity=$ID" >> "$GITHUB_OUTPUT"
           echo "signing as: $ID"
 
+      # SKIP_NOTARIZATION exists for one situation: Apple holds an account's
+      # first submission for in-depth analysis, and every later submission from
+      # that account queues behind it. While that lasts, notarising in CI does
+      # not fail — it hangs, on a runner billed at 10x. Setting the repository
+      # variable to 'true' ships signed-but-unnotarised rather than not at all.
+      # Unset it the moment the hold clears; the check below makes sure a
+      # release cannot quietly claim to be notarised while it is set.
       - name: Build
+        id: build
         env:
           IDENTITY: ${{ steps.signing.outputs.identity }}
           NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           NOTARY_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          SKIP_NOTARIZATION: ${{ vars.SKIP_NOTARIZATION }}
         run: |
           set -euo pipefail
-          if [ -n "${IDENTITY:-}" ] && [ -n "${NOTARY_KEY_P8:-}" ]; then
+          NOTARISED=false
+          if [ "${SKIP_NOTARIZATION:-}" = "true" ]; then
+            echo "::warning::SKIP_NOTARIZATION is set — shipping signed but NOT notarised. Users will see Gatekeeper's malware warning on first open."
+          elif [ -n "${IDENTITY:-}" ] && [ -n "${NOTARY_KEY_P8:-}" ]; then
             printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/ac.p8"
             export NOTARY_KEY_PATH="$RUNNER_TEMP/ac.p8"
+            NOTARISED=true
           elif [ -n "${IDENTITY:-}" ]; then
             echo "::warning::signed but APPLE_API_KEY_P8 is not set — not notarised"
           fi
+          echo "notarised=$NOTARISED" >> "$GITHUB_OUTPUT"
           trap 'rm -f "$RUNNER_TEMP/ac.p8"' EXIT
           ./scripts/build-app.sh
 
@@ -113,6 +127,7 @@ jobs:
         env:
           V: ${{ steps.v.outputs.version }}
           SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARISED: ${{ steps.build.outputs.notarised }}
         run: |
           set -euo pipefail
           # Verify the copy that ships, not the one on disk: ditto is what
@@ -136,12 +151,24 @@ jobs:
           # above only says the signature is internally consistent; an ad-hoc
           # build passes it and is still refused on every machine but this one.
           if [ -n "$SIGNING_IDENTITY" ]; then
-            xcrun stapler validate verify/Torpor.app
-            spctl --assess --type execute --verbose=2 verify/Torpor.app
+            # The entitlement is checked whether or not we notarised: without it
+            # revive cannot drive Terminal, and that is the feature.
             codesign -d --entitlements - --xml verify/Torpor.app 2>/dev/null \
               | grep -q apple-events \
               || { echo "::error::packaged app lost the apple-events entitlement — revive would fail"; exit 1; }
+          fi
+          if [ "${NOTARISED:-false}" = "true" ]; then
+            xcrun stapler validate verify/Torpor.app
+            spctl --assess --type execute --verbose=2 verify/Torpor.app
             echo "notarised, stapled, and accepted by Gatekeeper"
+          elif [ -n "$SIGNING_IDENTITY" ]; then
+            # Assert the negative too, so "unnotarised" is a recorded fact in the
+            # log rather than an absence someone has to notice.
+            if xcrun stapler validate verify/Torpor.app >/dev/null 2>&1; then
+              echo "::error::a ticket is stapled but this build did not notarise — refusing to guess what shipped"
+              exit 1
+            fi
+            echo "::warning::signed as $SIGNING_IDENTITY but NOT notarised — first open shows Gatekeeper's warning"
           else
             echo "::warning::ad-hoc build — users must clear the quarantine flag by hand"
           fi
