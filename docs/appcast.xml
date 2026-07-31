@@ -7,6 +7,19 @@
     <language>en</language>
     <!-- Releases are inserted here by .github/workflows/release.yml, newest first. -->
     <item>
+      <title>0.3.0</title>
+      <link>https://github.com/YasserShkeir/torpor/releases/tag/v0.3.0</link>
+      <sparkle:version>0.3.0</sparkle:version>
+      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/YasserShkeir/torpor/releases/tag/v0.3.0</sparkle:releaseNotesLink>
+      <pubDate>Fri, 31 Jul 2026 07:43:55 GMT</pubDate>
+      <enclosure url="https://github.com/YasserShkeir/torpor/releases/download/v0.3.0/Torpor-0.3.0.zip"
+                 sparkle:edSignature="FqG1nlodlqiLjaWJBqm2l7SSzI/PwW/QiR5vcz2Km099FIA4AIuPvRxbEB3+rKyTO7/KLw9c3M6Agtt6I6v7DQ=="
+                 length="3597874"
+                 type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.2.0</title>
       <link>https://github.com/YasserShkeir/torpor/releases/tag/v0.2.0</link>
       <sparkle:version>0.2.0</sparkle:version>
