@@ -280,8 +280,7 @@ enum CLI {
             let record = hibernated(matching: id, in: store, flag: "--revive")
             do {
                 try SessionControl.revive(record,
-                                          terminal: Preferences.load().launchTerminal,
-                                          store: store)
+                                          terminal: Preferences.load().launchTerminal)
                 print("Revived \(record.name).")
             } catch { fail(error.localizedDescription) }
 

@@ -64,8 +64,7 @@ enum SessionControl {
             }
             // Best-effort: failing to record must not stop the user freezing.
             try? store.add(FrozenSubtree(pid: pid, startedAt: snap.startTime,
-                                         name: snap.command, children: children,
-                                         frozenAt: Date()))
+                                         children: children))
         }
         // Best-effort on children: a process that exits mid-loop must not stop
         // us stopping the rest, or the tree is left half-frozen.
@@ -247,11 +246,11 @@ enum SessionControl {
 
     /// True only if this pid still holds *the same* process we started with.
     ///
-    /// `ProcProbe.isAlive` answers "does some process hold this number", which
-    /// is a different question: PIDs recycle (measured at ~36-40/s on a busy
-    /// machine, so the full range wraps in well under an hour), and a zombie
-    /// still answers yes. Both would make us stop waiting — or escalate to
-    /// SIGKILL — against whatever inherited the number.
+    /// A bare liveness check answers "does some process hold this number",
+    /// which is a different question: PIDs recycle (measured at ~36-40/s on a
+    /// busy machine, so the full range wraps in well under an hour), and a
+    /// zombie still answers yes. Both would make us stop waiting — or escalate
+    /// to SIGKILL — against whatever inherited the number.
     static func isStillSameProcess(pid: Int32, startedAt: Date) -> Bool {
         guard let snap = ProcProbe.snapshot(pid) else { return false }
         guard let info = ProcProbe.bsdInfo(pid), info.pbi_status != UInt32(SZOMB) else {
@@ -444,16 +443,12 @@ enum SessionControl {
 
     @discardableResult
     static func revive(_ record: HibernatedSession,
-                       terminal: String,
-                       store: HibernationStore) throws -> ReviveOutcome {
+                       terminal: String) throws -> ReviveOutcome {
         let command = "cd \(shellQuote(record.cwd)) && clear && \(record.resumeCommand)"
 
         // Prefer the tab the session died in. Only its own shell may still be
         // sitting on that tty, so a match is unambiguous.
         if let tty = record.tty, let app = reviveInOriginalTab(command: command, tty: tty) {
-            // `revivingSince` is advisory bookkeeping, so a failed write must not
-            // fail a revive that has already opened a terminal.
-            try? store.markReviving(sessionId: record.sessionId)
             return .originalTab(app: app)
         }
         try launch(command: command, terminal: terminal)
@@ -463,7 +458,6 @@ enum SessionControl {
         // the record now would destroy the only copy of the captured argv on a
         // revive that printed "command not found". Engine clears it once a live
         // session with this id appears in the registry.
-        try? store.markReviving(sessionId: record.sessionId)
         return .newWindow(app: terminal)
     }
 

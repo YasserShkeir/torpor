@@ -25,7 +25,6 @@ struct ConsoleUsage: Codable, Equatable {
     var monthToDateUSD: Double = 0
     var days: [Day] = []
     var byModel: [String: Double] = [:]
-    var fetchedAt: Date = Date()
 }
 
 /// Network client.
@@ -38,7 +37,6 @@ struct ConsoleUsage: Codable, Equatable {
 actor UsageAPI {
 
     enum APIError: LocalizedError {
-        case notConfigured
         case unauthorized
         case rateLimited(retryAfter: TimeInterval)
         case http(status: Int, body: String)
@@ -46,8 +44,6 @@ actor UsageAPI {
 
         var errorDescription: String? {
             switch self {
-            case .notConfigured:
-                return "No credentials configured for this source."
             case .unauthorized:
                 return "Credentials were rejected. The token may have expired — reconnect in Settings."
             case let .rateLimited(retryAfter):

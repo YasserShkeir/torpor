@@ -627,7 +627,7 @@ struct StylePreview: View {
                         for: engine.preferences.memoryFigure,
                         mode: engine.preferences.colorMode),
                     resetsAt: Date().addingTimeInterval(5_580),
-                    sessionCount: 3, isStale: false, windowElapsed: 0.45))
+                    isStale: false, windowElapsed: 0.45))
                     .frame(height: MenuBarRenderer.compositeHeight)
                 Text(style.label).font(.caption)
                 Spacer()

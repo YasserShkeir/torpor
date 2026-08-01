@@ -145,7 +145,6 @@ final class Engine: ObservableObject {
     struct AccountStatus {
         var connected = false
         var detail = "Not connected"
-        var subscriptionType: String?
         var lastFetch: Date?
         var lastFetchError: String?
         /// Which mode produced `lastFetchError`, so it can be dropped when the
@@ -232,7 +231,6 @@ final class Engine: ObservableObject {
 
         var busyCount: Int { statusCounts["busy"] ?? 0 }
         var idleCount: Int { statusCounts["idle"] ?? 0 }
-        var unknownCount: Int { sessions.count - busyCount - idleCount }
 
         /// Every session here is explicitly idle. Sessions whose status the
         /// registry does not report — the VS Code entrypoint omits it — are not
@@ -572,7 +570,7 @@ final class Engine: ObservableObject {
     func revive(_ record: HibernatedSession) {
         do {
             let outcome = try SessionControl.revive(
-                record, terminal: preferences.launchTerminal, store: store)
+                record, terminal: preferences.launchTerminal)
             switch outcome {
             case let .originalTab(app):
                 lastError = nil
@@ -660,7 +658,6 @@ final class Engine: ObservableObject {
                 accountStatus.connected = false
                 accountStatus.detail = "Accept the risk notice to connect"
             } else if let token = CredentialStore.subscriptionToken() {
-                accountStatus.subscriptionType = token.subscriptionType
                 if token.isExpired {
                     accountStatus.connected = false
                     accountStatus.detail = "Token expired — reconnect"
@@ -928,7 +925,6 @@ final class Engine: ObservableObject {
                      memoryColor: MenuBarRenderer.memoryTint(for: preferences.memoryFigure,
                                                              mode: preferences.colorMode),
                      resetsAt: resets,
-                     sessionCount: sessions.count,
                      isStale: quota?.isStale ?? false,
                      windowElapsed: elapsed)
     }

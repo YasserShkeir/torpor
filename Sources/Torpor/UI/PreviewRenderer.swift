@@ -80,7 +80,7 @@ enum PreviewRenderer {
                         memoryText: reading.memory,
                         memoryColor: MenuBarRenderer.memoryTint(for: reading.figure, mode: mode),
                         resetsAt: Date().addingTimeInterval(4_200),
-                        sessionCount: 4, isStale: reading.stale,
+                        isStale: reading.stale,
                         windowElapsed: reading.elapsed)
 
                     // Composite is the status item's own drawing code, so the

@@ -13,7 +13,9 @@ struct Session: Identifiable, Hashable {
     var entrypoint: String
     var startedAt: Date
     /// Registry `status`, when present. Absent on older versions and on the
-    /// VS Code entrypoint, in which case we fall back to CPU-delta inference.
+    /// VS Code entrypoint. There is no fallback: a nil status is treated as
+    /// unknown, and an unknown session is never eligible for hibernate or
+    /// auto-hibernate.
     var declaredStatus: String?
     /// Registry `updatedAt`: the moment status last *changed*. For a session
     /// that has been sitting idle, this is genuinely "went idle at" — verified
@@ -25,7 +27,6 @@ struct Session: Identifiable, Hashable {
     var childFootprint: UInt64 = 0
     var childResident: UInt64 = 0
     var childCount: Int = 0
-    var cpuSeconds: Double = 0
 
     var isFrozen: Bool = false
 
@@ -96,8 +97,6 @@ enum SessionRegistry {
         var looksBroken: Bool { filesSeen > 0 && filesDecoded == 0 }
     }
 
-    static func load() -> [Session] { loadDetailed().sessions }
-
     /// All sessions whose PID is still alive, enriched with memory and children.
     static func loadDetailed() -> LoadResult {
         let fm = FileManager.default
@@ -156,7 +155,6 @@ enum SessionRegistry {
 
             session.ownFootprint = proc.footprint
             session.ownResident = proc.resident
-            session.cpuSeconds = proc.cpuSeconds
 
             // MCP servers are separate processes and are the majority of a
             // session's real cost once you count them.

@@ -49,8 +49,6 @@ struct SessionUsage: Equatable {
     /// just the two totals added, not a fifth number to reconcile.
     var contextTokens: Int?
     var contextWindowSize: Int?
-    var modelId: String?
-    var modelName: String?
     var capturedAt: Date
 }
 
@@ -180,7 +178,6 @@ enum QuotaReader {
             guard let payload = object(at: file) else { continue }
             let cost = payload["cost"] as? [String: Any] ?? [:]
             let context = payload["context_window"] as? [String: Any] ?? [:]
-            let model = payload["model"] as? [String: Any] ?? [:]
             let input = integer(context["total_input_tokens"])
             let output = integer(context["total_output_tokens"])
             out[sessionId] = SessionUsage(
@@ -190,8 +187,6 @@ enum QuotaReader {
                 contextTokens: (input == nil && output == nil)
                     ? nil : (input ?? 0) + (output ?? 0),
                 contextWindowSize: integer(context["context_window_size"]),
-                modelId: model["id"] as? String,
-                modelName: model["display_name"] as? String,
                 capturedAt: writtenAt(file) ?? Date()
             )
         }

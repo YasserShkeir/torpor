@@ -92,8 +92,7 @@ func record(cwd: String = "/tmp/p",
                       reclaimedBytes: 0,
                       version: "2.1.220",
                       entrypoint: entrypoint,
-                      tty: tty,
-                      revivingSince: nil)
+                      tty: tty)
 }
 
 // MARK: - Transcripts

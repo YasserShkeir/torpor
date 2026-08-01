@@ -29,9 +29,6 @@ enum Paths {
         return url
     }
 
-    static var claudeSessions: URL { claude.appendingPathComponent("sessions", isDirectory: true) }
-    static var claudeProjects: URL { claude.appendingPathComponent("projects", isDirectory: true) }
-
     static var hibernationStore: URL { support.appendingPathComponent("hibernated.json") }
     static var frozenStore: URL { support.appendingPathComponent("frozen.json") }
     static var preferences: URL { support.appendingPathComponent("preferences.json") }
@@ -72,10 +69,6 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
     /// how revive reopens the session in the tab it actually died in rather
     /// than a fresh window. Nil for sessions with no tty (VS Code-hosted).
     var tty: String?
-    /// Set when a revive has been launched but the session has not yet
-    /// reappeared in the registry. The record is kept until it does, because
-    /// launching a terminal proves nothing about whether `claude` actually ran.
-    var revivingSince: Date?
 
     var id: String { sessionId }
 
@@ -243,9 +236,7 @@ struct FrozenSubtree: Codable, Identifiable, Hashable {
     var pid: Int32
     /// Start time, so a recycled PID is never mistaken for the session.
     var startedAt: Date
-    var name: String
     var children: [FrozenChild]
-    var frozenAt: Date
 
     var id: Int32 { pid }
 }
@@ -562,13 +553,6 @@ final class HibernationStore: @unchecked Sendable {
 
     func remove(sessionId: String) throws {
         try mutate { list in list.removeAll { $0.sessionId == sessionId } }
-    }
-
-    func markReviving(sessionId: String) throws {
-        try mutate { list in
-            guard let index = list.firstIndex(where: { $0.sessionId == sessionId }) else { return }
-            list[index].revivingSince = Date()
-        }
     }
 
     /// Mutate and persist as one step, restoring the list if the write fails.

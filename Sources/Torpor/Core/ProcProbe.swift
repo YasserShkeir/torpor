@@ -14,14 +14,11 @@ enum ProcProbe {
     struct Snapshot {
         var pid: Int32
         var ppid: Int32
-        var command: String
         /// Total memory charged to the process, including compressed pages.
         var footprint: UInt64
         /// Pages still occupying physical RAM. Freezing can only ever reclaim
         /// this much; hibernating reclaims the whole footprint.
         var resident: UInt64
-        /// Cumulative CPU time (user + system) in seconds.
-        var cpuSeconds: Double
         var startTime: Date
 
         /// NOTE: `footprint - resident` is *not* a valid compressed-bytes
@@ -79,29 +76,13 @@ enum ProcProbe {
         guard let bsd = bsdInfo(pid) else { return nil }
         guard let ru = rusage(pid) else { return nil }
 
-        var comm = bsd.pbi_comm
-        let name = withUnsafePointer(to: &comm) {
-            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN)) {
-                String(cString: $0)
-            }
-        }
-
-        // ri_user_time / ri_system_time are nanoseconds of CPU consumed.
-        let cpu = Double(ru.ri_user_time &+ ru.ri_system_time) / 1_000_000_000
-
         return Snapshot(
             pid: pid,
             ppid: Int32(bitPattern: bsd.pbi_ppid),
-            command: name,
             footprint: ru.ri_phys_footprint,
             resident: ru.ri_resident_size,
-            cpuSeconds: cpu,
             startTime: Date(timeIntervalSince1970: TimeInterval(bsd.pbi_start_tvsec))
         )
-    }
-
-    static func isAlive(_ pid: Int32) -> Bool {
-        bsdInfo(pid) != nil
     }
 
     /// Controlling terminal, e.g. `/dev/ttys016`, or nil when the process has

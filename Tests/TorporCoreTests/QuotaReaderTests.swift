@@ -98,8 +98,6 @@ import Testing
         #expect(usage.contextUsedPercentage == 16)
         #expect(usage.contextWindowSize == 1_000_000)
         #expect(usage.contextTokens == 164_093, "input plus output, not a fifth number")
-        #expect(usage.modelId == "claude-opus-5[1m]")
-        #expect(usage.modelName == "Opus 5 (1M context)")
     }
 
     /// An explicit `captured_at` wins over the file's modification date.
@@ -162,7 +160,8 @@ import Testing
     /// Dropped one at a time and cumulatively: `cost`, then `context_window`,
     /// then `model`. Each loss costs that field and leaves `rate_limits`
     /// readable, which is the whole reason this is parsed as dictionaries rather
-    /// than through `Codable`.
+    /// than through `Codable`. `model` is still written by the shim but nothing
+    /// reads it, so dropping it must cost nothing at all.
     @Test(arguments: [["cost"],
                       ["cost", "context_window"],
                       ["cost", "context_window", "model"],
@@ -187,7 +186,6 @@ import Testing
         #expect(usage.contextUsedPercentage
                 == (dropped.contains("context_window") ? nil : 16))
         #expect(usage.contextTokens == (dropped.contains("context_window") ? nil : 164_093))
-        #expect(usage.modelId == (dropped.contains("model") ? nil : "claude-opus-5[1m]"))
     }
 
     /// A window missing its percentage is not a window. Losing one must not cost

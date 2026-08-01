@@ -186,7 +186,6 @@ enum MenuBarRenderer {
         /// wants. Never derived from a threshold — see `memoryTint`.
         var memoryColor: NSColor?
         var resetsAt: Date?
-        var sessionCount: Int
         var isStale: Bool
         /// 0…1 through the window that `fraction` measures, or nil when that
         /// window is unknown or the metric has none. Never another window's
