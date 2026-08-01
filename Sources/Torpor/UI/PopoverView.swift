@@ -645,10 +645,19 @@ struct GaugeRow: View {
                 .font(.system(size: 10, design: .rounded)).bold()
                 .foregroundStyle(tint).monospacedDigit()
                 .frame(width: 32, alignment: .trailing)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
+            // 34pt fitted "2h 49m" and not "23h 59m", which the weekly window
+            // shows for a whole day near its reset — and a too-narrow frame
+            // makes SwiftUI wrap rather than clip, so the row silently grew a
+            // second line. Sized for the longest string Fmt.duration emits, and
+            // told outright never to wrap.
             Text(countdown)
                 .font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit()
-                .frame(width: 34, alignment: .trailing)
+                .frame(width: 46, alignment: .trailing)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label): \(Int(window.usedPercentage)) percent used"
