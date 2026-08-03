@@ -424,12 +424,27 @@ actor TranscriptScanner {
     /// Per-file state is keyed by full path, so adding files needs no other
     /// change. Subagent transcripts are counted separately as well, because
     /// "how much of this went to subagents" is worth knowing on its own.
+    /// Cancellable, and it has to be.
+    ///
+    /// This reads every transcript a session owns, which on this machine is
+    /// 400-odd files across 159 MB, with synchronous FileHandle I/O. The caller
+    /// cancels the previous scan whenever a newer poll supersedes it — but
+    /// cancelling a Task does nothing to work already running inside an actor,
+    /// and without a check in this loop the cancelled scan ran to completion
+    /// anyway while the next one queued behind it. Every poll then added more
+    /// than it withdrew: after a day the process was on 64 threads at 100% CPU
+    /// with the main actor starved, so the menu bar item stopped responding to
+    /// clicks entirely.
+    ///
+    /// Checked per file rather than per session, because one session's subagent
+    /// tree is itself minutes of work.
     func totals(cwd: String, sessionId: String) -> TokenTotals {
         var combined = TokenTotals()
         let parent = Self.transcriptURL(cwd: cwd, sessionId: sessionId)
         let urls = Self.transcriptURLs(cwd: cwd, sessionId: sessionId)
         pathsBySession[sessionId] = Set(urls.map(\.path))
         for url in urls {
+            if Task.isCancelled { return combined }
             var part = totals(at: url)
             if url != parent { part.subagentTokens = part.total }
             combined = combined + part

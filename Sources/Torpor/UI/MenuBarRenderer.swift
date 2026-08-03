@@ -353,10 +353,17 @@ enum MenuBarRenderer {
     /// 1 hr 33 min" — and because a bare "9:10 PM" sitting under a bar names an
     /// hour without saying what happens at it. Nil once the window has run out,
     /// which is the same moment `isExpired` starts dimming the fill.
+    /// Never seconds. `Fmt.duration` drops to "45s" under a minute, which is
+    /// right for an idle time you are reading deliberately and wrong for a
+    /// number sitting in the menu bar: it redraws every second for the last
+    /// minute of a five-hour window, which catches the eye repeatedly to convey
+    /// nothing, and the width changes under it as the digits do. The last
+    /// minute reads "1m" and then the row goes away.
     static func durationText(_ input: Input) -> String? {
         guard input.marker.showsDuration, let resets = input.resetsAt else { return nil }
         let remaining = resets.timeIntervalSinceNow
-        return remaining > 0 ? Fmt.duration(remaining) : nil
+        guard remaining > 0 else { return nil }
+        return Fmt.duration(max(remaining, 60))
     }
 
     /// Colour for the level, so the number in the Percentage style carries the

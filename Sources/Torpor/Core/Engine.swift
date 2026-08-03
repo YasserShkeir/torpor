@@ -434,9 +434,23 @@ final class Engine: ObservableObject {
     /// Superseding scans cancel their predecessor, so holding the popover open
     /// through several poll ticks cannot pile up overlapping passes.
     private func rescanTokens(sessions: [Session], live: Set<String>) {
-        scanTask?.cancel()
+        // Cancelling is a request, not a stop: the scan is actor work doing
+        // synchronous file I/O, so a superseded one keeps running until it
+        // reaches its next cancellation check. Starting another regardless
+        // meant every poll enqueued more than it withdrew, and the cooperative
+        // pool spawned a thread per blocked call to compensate — 64 of them
+        // after a day, with the main actor starved and the popover dead.
+        //
+        // So: ask the old one to stop, and do not start a new one until it
+        // has. Skipping a scan costs a poll's worth of staleness in a spend
+        // readout; not skipping it cost the whole app.
+        guard scanTask == nil else {
+            scanTask?.cancel()
+            return
+        }
         let scanner = self.scanner
         scanTask = Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.scanTask = nil } }
             var fresh: [String: TokenTotals] = [:]
             for session in sessions {
                 if Task.isCancelled { return }
