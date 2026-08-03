@@ -49,11 +49,16 @@ and it carries on.
 brings it back in the same terminal tab, the same directory, with the flags it
 was started with. You never type `--resume`.
 
-Your 5-hour and weekly usage sit in the menu bar, with a white line marking how
-far through the window you are — fill behind the line means you're on pace.
+Your 5-hour or weekly usage sits in the menu bar — you pick which — with a white
+line marking how far through that window you are. Fill behind the line means
+you're on pace. Memory used by all sessions sits in the second column.
 
 <p align="center">
-  <img src="docs/images/menubar.png" width="560" alt="The menu bar item: a quota bar with time remaining beneath it, and memory used alongside">
+  <img src="docs/images/menubar.png" width="560" alt="The menu bar item magnified, in both metrics: a quota bar with time remaining beneath it, and memory used alongside">
+</p>
+
+<p align="center">
+  <img src="docs/images/settings-appearance.png" width="560" alt="Settings, Appearance tab, with a live preview of the menu bar item above every control that changes it">
 </p>
 
 ## Install
@@ -62,23 +67,15 @@ far through the window you are — fill behind the line means you're on pace.
 brew install --cask yassershkeir/torpor/torpor
 ```
 
-Then, **before opening it the first time**:
+and it opens. Torpor is signed with a Developer ID and notarised, with the
+ticket stapled into the bundle, so there is no `xattr` step and no trip through
+System Settings. Notarisation is Apple's automated malware scan, not Apple
+vouching for what the app does — and Torpor is not sandboxed and not on the App
+Store, because reading another process's memory and signalling it are the
+product and the sandbox forbids both.
 
-```sh
-xattr -dr com.apple.quarantine /Applications/Torpor.app
-```
-
-Without it macOS says it *could not verify Torpor is free of malware*. That
-wording is alarming and it means something narrower than it sounds: Torpor is
-signed with an Apple Developer ID, but Apple has not yet issued the notarisation
-ticket that lets Gatekeeper confirm it. The submission is sitting in Apple's
-queue — first ones from a new developer account can be held for days — and this
-line goes away when it clears.
-
-If that command reports `Operation not permitted`, macOS has already locked the
-marker. Use **System Settings → Privacy & Security → Open Anyway** instead.
-
-Building it yourself skips all of that:
+Or build it yourself. A local build is ad-hoc signed and never quarantined, so
+it opens too:
 
 ```sh
 git clone https://github.com/YasserShkeir/torpor.git
@@ -89,9 +86,9 @@ macOS 14+ to run. `swift build` wants Swift 6.0 or newer; the universal build in
 `./scripts/build-app.sh` goes through Xcode's build system, which wants Swift
 6.2.
 
-Reviving a session asks permission to control Terminal or iTerm. Builds now
-carry a stable Developer ID, so unlike earlier releases it asks once rather than
-again after every update.
+Reviving a session asks permission to control Terminal or iTerm. macOS binds
+that grant to the signing identity, and the Developer ID does not change from
+build to build, so it asks once rather than again after every update.
 
 ## Freezing doesn't free memory, and I shipped it saying so
 
@@ -111,10 +108,6 @@ RSS against 319 MB by footprint. Any RSS-based monitor is wrong about idle
 processes by roughly ten times, which is why this exists.
 
 ## Where the usage numbers come from
-
-<p align="center">
-  <img src="docs/images/settings-appearance.png" width="560" alt="Settings, Appearance tab, with a live preview of the menu bar item above every control that changes it">
-</p>
 
 | Source | Gives you | Standing |
 |---|---|---|
@@ -138,8 +131,9 @@ terms say OAuth is for their own clients, so that risk is yours, not mine.
 ## Updating and uninstalling
 
 Torpor updates itself, checking a static appcast once a day. Updates carry an
-EdDSA signature checked against a key built into the app, which is what vouches
-for them given macOS can't.
+EdDSA signature checked against a key built into the app — a check of my own,
+independent of Apple's, not a substitute for it. Every release is notarised as
+well.
 
 Uninstalling has an order to it. `--uninstall-statusline` puts your original
 statusline back in `~/.claude/settings.json`; run it first, and only run the
@@ -157,6 +151,10 @@ nothing left to restore from.
 If the first command fails, stop and fix that. `brew uninstall --cask torpor`
 without `--zap` is safe either way — it leaves the shim in place, so your
 statusline keeps working.
+
+Neither line touches the Keychain. If you saved a subscription token or a
+Console API key, `security delete-generic-password -s dev.torpor.Torpor` removes
+one — run it again if you saved both.
 
 ## Docs
 

@@ -220,8 +220,14 @@ enum CLI {
             // preview describes the record that would actually be stored —
             // including the refusal. Without this, --preview cheerfully
             // described a hibernate that --hibernate then declined.
-            let (replayable, refused) = HibernatedSession.replayable(
-                from: Array(captured.argv.dropFirst()))
+            let seen = Array(captured.argv.dropFirst())
+            let (replayable, refused) = HibernatedSession.replayable(from: seen)
+            // Everything flag-shaped that survives neither the allowlist nor the
+            // refusal. The one that matters is --dangerously-skip-permissions:
+            // it is deliberately not replayed, and a preview that reported only
+            // "1 flags" left the user to discover after the revive that their
+            // permission grant was gone.
+            let dropped = droppedFlags(seen: seen, replaying: replayable, refusing: refused)
             let tty = ProcProbe.tty(pid)
             let record = HibernatedSession(
                 sessionId: session.sessionId, cwd: session.cwd, name: session.name,
@@ -229,18 +235,26 @@ enum CLI {
                 arguments: replayable,
                 hibernatedAt: Date(), reclaimedBytes: session.totalFootprint,
                 version: session.version, entrypoint: session.entrypoint, tty: tty)
-            print("session:   \(session.projectName) (\(session.sessionId))")
+            // One label column, 12 wide: "would free:" used to sit a character
+            // right of everything else, which reads as a stray line.
+            print("session:    \(session.projectName) (\(session.sessionId))")
             print("would free: \(Fmt.bytes(session.totalFootprint)) across \(session.childCount + 1) processes")
-            print("argv seen:  \(captured.argv.count - 1) flags")
+            // "arguments", not "flags": the count includes the values of value
+            // flags, so `claude --model opus` is two arguments and one flag.
+            print("argv seen:  \(seen.count) argument\(seen.count == 1 ? "" : "s")")
             print("replaying:  \(replayable.isEmpty ? "(none)" : replayable.joined(separator: " "))")
+            if !dropped.isEmpty {
+                print("dropping:   \(dropped.joined(separator: " ")) — not on the replay allowlist, "
+                      + "so a revived session starts without them")
+            }
             if !refused.isEmpty {
                 // Only the flag names — the values are the reason they are
                 // refused (an inline --mcp-config carries its servers' secrets).
                 print("refusing:   \(refused.joined(separator: " ")) — carries an inline value Torpor will not store")
                 print("hibernate would refuse this session; nothing would be terminated.")
             }
-            print("terminal:  " + (tty.map { "\($0) — revive returns to this tab if it is still open" }
-                                   ?? "no tty (VS Code-hosted) — revive opens a new window"))
+            print("terminal:   " + (tty.map { "\($0) — revive returns to this tab if it is still open" }
+                                    ?? "no tty (VS Code-hosted) — revive opens a new window"))
             print("revive runs:")
             print("  cd \(shellQuote(record.cwd)) && \(record.resumeCommand)")
 
@@ -461,6 +475,28 @@ enum CLI {
                  + matches.map { "  \($0.sessionId)  \($0.name)" }.joined(separator: "\n"))
         }
         return record
+    }
+
+    /// Flag-shaped arguments that a revive would silently leave behind.
+    ///
+    /// Derived here rather than in `HibernatedSession.replayable`, which reports
+    /// only what it keeps and what it refuses. Values are never flag-shaped —
+    /// the allowlist stops consuming a run at the first `-` — so anything
+    /// starting with `-` that came back in neither list was dropped.
+    private static func droppedFlags(seen: [String],
+                                     replaying: [String],
+                                     refusing: [String]) -> [String] {
+        let kept = Set(replaying)
+        let refused = Set(refusing)
+        var out: [String] = []
+        for token in seen where token.hasPrefix("-") && !kept.contains(token) {
+            // `--flag=value` is refused under the bare flag name.
+            let name = token.firstIndex(of: "=")
+                .map { String(token[token.startIndex..<$0]) } ?? token
+            guard !kept.contains(name), !refused.contains(name), !out.contains(name) else { continue }
+            out.append(name)
+        }
+        return out
     }
 
     /// Whether the statusline snapshot is at least well-formed JSON.

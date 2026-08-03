@@ -25,13 +25,15 @@ notification permission, make no network call, and cannot trigger auto-hibernate
 | `--list` | Every running session: pid, status, idle time, subtree footprint, subtree resident, MCP child count, project |
 | `--groups` | The same, grouped by working directory, which is how the popover shows it |
 | `--hibernated` | Sessions Torpor has hibernated and can bring back |
-| `--status` | Statusline install state, the 5-hour and weekly percentages, per-model weekly rows if your account has them, and how old the reading is. No percentages until the shim is installed and Claude Code has rendered a prompt |
+| `--status` | Statusline install state, the 5-hour and weekly percentages, per-model weekly rows if your account has them, and how old the reading is. No percentages until the shim is installed and Claude Code has rendered a prompt, and none ever on an API-key, Bedrock or Vertex account — Claude Code sends those no plan limits |
 | `--preview <pid>` | What hibernating that session would capture and replay. Reads argv, changes nothing |
-| `--resume-command <session-id>` | The command `--revive` would run. Prints, runs nothing |
+| `--resume-command <session-id>` | The command `--revive` would run, minus the screen clear. Prints, runs nothing |
 | `--version`, `--help` | What they say |
 
-An unrecognised flag prints usage to stderr and exits 2. Only a bare `Torpor`
-launches the app.
+An unrecognised flag prints usage to stderr and exits 2. So does a bare word —
+`Torpor list` is a mistyped flag, not a subcommand, and it says so rather than
+launching a second menu bar instance. Only `Torpor` with no arguments launches
+the app.
 
 ## Acting
 
@@ -47,13 +49,17 @@ These change something. Each one is also reachable from the popover.
 `--hibernate` writes the recovery record **before** it signals anything, so a
 crash halfway through cannot leave a terminated session with no way back.
 
+A session id can be any unambiguous prefix of one, case-insensitively. An
+ambiguous prefix lists what it matched and does nothing; an empty one is a usage
+error rather than a match on the first record.
+
 ## Statusline
 
 | Command | What happens |
 |---|---|
 | `--install-statusline` | Add the shim to `settings.json`, keeping whatever statusline you already had |
 | `--uninstall-statusline` | Remove it and put your original back |
-| `--emit-shim <path>` | Write the shim to a file so you can read it before installing it |
+| `--emit-shim <path>` | Write the shim to a file so you can read it before installing it. It chains to nothing; the installed one chains to whatever statusline you already had |
 
 Run the uninstall **before** deleting the app. Nothing else will restore your
 original statusline for you: the command the shim chains to is recorded only in
@@ -69,13 +75,15 @@ would run. Neither changes anything:
 
 ```sh
 $ Torpor --resume-command 7b3e4cb7-...
-cd /Users/you/Documents/GitHub/atlagene && claude --resume 7b3e4cb7-... --mcp-config ./mcp.json --model opus
+cd /Users/you/Documents/GitHub/atlagene && /Users/you/.local/bin/claude --resume 7b3e4cb7-... --mcp-config ./mcp.json --model opus
 ```
 
 A revive runs the same thing with a `clear` between the `cd` and the `claude`,
 so the new terminal starts empty — that is the one difference. The working
 directory is quoted only when it holds something a shell would otherwise
-interpret.
+interpret. The binary is the absolute path the session was launched from, while
+that path still exists; a bare `claude` otherwise, and always for a session
+hosted by VS Code or the desktop app.
 
 `claude --resume` on its own is lossy: it restores the conversation but drops
 `--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir` and `--model`. Torpor
@@ -91,6 +99,9 @@ drops:
 - **Permission grants.** `--dangerously-skip-permissions` and `--permission-mode`
   were scoped to a decision you made about the old process. Reviving is not the
   moment to re-grant them from a menu bar click.
+
+`--preview` names both lists — what it would replay, and what it would leave
+behind — before anything is terminated.
 
 If argv can't be read at all, hibernate refuses. A session it can't bring back is
 one it won't end.

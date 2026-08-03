@@ -14,8 +14,10 @@ most menu bar apps do not:
 - **`~/.claude/settings.json`** is modified when you install the usage reporter,
   and copied to a timestamped backup in Application Support before any change.
 - **Your login Keychain**, only if you choose a token-based usage source. Torpor
-  stores its own item; it reads Claude Code's item only when you press Connect,
-  and macOS shows you a consent dialog when it does.
+  stores its own item under the service `dev.torpor.Torpor`; it reads Claude
+  Code's item only when you press Connect, and macOS shows you a consent dialog
+  when it does. Uninstalling the app does not remove Torpor's item —
+  `security delete-generic-password -s dev.torpor.Torpor` does.
 - **Process signals.** Hibernate sends `SIGTERM` (escalating to `SIGKILL`) and
   Freeze sends `SIGSTOP`, to Claude Code sessions and their child processes.
 - **AppleEvents**, to open a terminal window when reviving a session.

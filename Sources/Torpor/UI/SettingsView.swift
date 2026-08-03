@@ -861,7 +861,7 @@ struct AboutTab: View {
                     Text(engine.installKind.note)
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Checks daily, asks before installing, and verifies each update against a key built into this app. Torpor isn't notarised, so macOS treats every update as a new app and asks again for Terminal and Keychain permission.")
+                    Text("Checks daily, asks before installing, and verifies each update against a key built into this app. Torpor is signed with a Developer ID and notarised, so the signing identity no longer changes between builds and macOS keeps the Terminal and Keychain permissions you already granted.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

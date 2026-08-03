@@ -49,6 +49,10 @@ Useful while developing. `swift build` leaves the binary at `.build/debug/Torpor
 `--render-live` exists because a 1.8pt marker inside an 18pt status item cannot
 be debugged by reading source.
 
+A plain `./scripts/build-app.sh` signs ad-hoc and needs no certificate, which is
+all a local build wants. Releases are signed with a Developer ID and notarised;
+[docs/signing.md](docs/signing.md) is the record of how that is set up.
+
 ## The one hard rule
 
 **No code path may read a subscription OAuth token, or contact

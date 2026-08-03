@@ -1,6 +1,8 @@
 # Signing and notarising
 
-What has to exist before a release stops asking users to run `xattr`.
+How releases are signed and notarised, and what had to exist first. Torpor ships
+signed with a Developer ID and notarised, with the ticket stapled into the
+bundle, so `brew install --cask` and a double-click is the whole install.
 
 Team ID: **5HSKMD6X59**
 
@@ -77,9 +79,10 @@ development.
 
 ## 4. Releasing from CI
 
-Five secrets. Missing ones downgrade the release to ad-hoc with a warning rather
-than failing it, and the packaged-app check asserts on what actually happened, so
-a release cannot claim to be notarised when it isn't.
+Five secrets. Missing ones warn rather than fail the release: no certificate
+ships an ad-hoc build, no API key ships a signed one with no ticket. The
+packaged-app check then asserts on what actually happened — including the
+negative — so a release cannot claim to be notarised when it isn't.
 
 | Secret | What it is |
 |---|---|
@@ -100,25 +103,54 @@ base64 -i AuthKey_XXXXXXXX.p8 | pbcopy       # APPLE_API_KEY_P8
 gh secret set APPLE_CERT_P12                 # paste, then the rest the same way
 ```
 
-## 5. What changes for users
+The release workflow uses `NOTARY_KEY_ID` / `NOTARY_ISSUER_ID` /
+`NOTARY_KEY_PATH` rather than a keychain profile — same script, the other of the
+two ways it can authenticate.
 
-Once a tagged release is notarised, the install stops being a two-step apology:
+## 5. Apple held the first submission for 84 hours
+
+Write this down because the next person to hit it will assume their bundle is
+broken. It isn't. Apple holds a new account's **first** submission for in-depth
+analysis, and every later submission from that account queues behind it. Ours
+sat for 84 hours and was then accepted with nothing changed. Submissions after
+it come back in minutes.
+
+While it lasted, `notarytool submit --wait` did not fail — it hung, on a runner
+billed at 10x. That is what the `SKIP_NOTARIZATION` repository variable in
+`.github/workflows/release.yml` is for: set it to `true` and a tag ships signed
+but unnotarised rather than not at all. Unset it the moment the hold clears. The
+packaged-app check refuses to describe a build as notarised while it is set, so
+the two cannot drift.
+
+## 6. What users get
 
 ```sh
 brew install --cask yassershkeir/torpor/torpor
 ```
 
-and it opens. No `xattr`, no **Open Anyway**.
+and it opens. No `xattr`, no *could not verify Torpor is free of malware*, no
+**Open Anyway**. The ticket is stapled into the bundle, so a first launch works
+offline. On an installed copy, the two questions worth asking are:
 
-The other thing it fixes is quieter and more annoying today. macOS binds
-Automation and Keychain grants to the signing identity, and every ad-hoc build
-has a different one, so the app re-asks for Terminal control after every update.
-A stable Developer ID means it asks once, ever.
+```sh
+spctl --assess --type execute --verbose=2 /Applications/Torpor.app
+xcrun stapler validate /Applications/Torpor.app
+```
 
-**Update the README when the first notarised release ships, not before.** It
-currently tells people to clear the quarantine flag, which is correct for 0.2.0
-and wrong the moment a signed build is out. The section to cut is
-`## Install`'s `xattr` paragraph, and `Why macOS blocks it` goes entirely.
+`accepted … source=Notarized Developer ID` and a valid ticket is the state a
+release is supposed to be in.
+
+The quieter fix is the grants. macOS binds Automation and Keychain consent to
+the signing identity, and every ad-hoc build had a different one, so Torpor
+re-asked for Terminal control after every update. A stable Developer ID means it
+asks once, ever.
+
+What notarisation is not: Apple vouching for what Torpor does. It is an
+automated malware scan and a signature Gatekeeper will accept. Torpor is not
+sandboxed and is not on the App Store — it reads other processes' memory and
+signals them, and the sandbox forbids both. `Resources/Torpor.entitlements`
+records that, along with the hardened-runtime exceptions deliberately *not*
+taken.
 
 ## Renewal
 

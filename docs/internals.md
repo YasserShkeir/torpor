@@ -87,9 +87,10 @@ has already computed, so there's no reason to maintain a price table. It also
 carries the context-window position and the model's display name.
 
 What it does **not** carry is any per-model limit. Captured live from 2.1.220,
-`rate_limits` holds `five_hour` and `seven_day` and nothing else. The per-model
-rows `/usage` shows you come from the account endpoint, which is a different
-source with different consequences.
+`rate_limits` holds `five_hour` and `seven_day` and nothing else — the reader
+still picks up `seven_day_opus` and `seven_day_sonnet` if they are there, and on
+current builds they never are. The per-model rows `/usage` shows you come from
+the account endpoint, which is a different source with different consequences.
 
 `rate_limits` is account-wide, so any session's snapshot is authoritative for it.
 `cost` is per-session, and every session's shim run writes the same file, so

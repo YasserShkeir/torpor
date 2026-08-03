@@ -319,6 +319,12 @@ final class Engine: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        // The scan outlives the engine otherwise. A CLI command builds an
+        // engine, refreshes once and exits — but refresh() starts a pass over
+        // every open session's transcript tree, which is minutes of file I/O on
+        // a large corpus, and the process cannot leave until it ends.
+        scanTask?.cancel()
+        scanTask = nil
         // Flush anything the coalescing window was still holding. A read-only
         // engine never scheduled one and must not write preferences at all.
         saveTask?.cancel()
@@ -374,7 +380,14 @@ final class Engine: ObservableObject {
         // otherwise keep claiming it is on. Never on a read-only engine —
         // assigning the flag re-registers the login item.
         if sideEffects { reconcileLoginItem() }
-        refreshAccountStatus()
+        // Reads the Keychain, which is not a read a headless process can make.
+        // `SecItemCopyMatching` asks for authorisation through a GUI dialog
+        // whenever the item's ACL does not match the calling binary — and it
+        // stops matching on every rebuild, because the ACL pins a cdhash. A
+        // `.prohibited` CLI process cannot draw that dialog and cannot dismiss
+        // it, so `--render-live` blocked forever inside Security with nothing
+        // on screen. Only an engine that owns a UI may ask.
+        if sideEffects { refreshAccountStatus() }
 
         if sideEffects, preferences.liveFetchPermitted { Task { await fetchLive() } }
 
@@ -449,17 +462,26 @@ final class Engine: ObservableObject {
             return
         }
         let scanner = self.scanner
+        // The body inherits this actor, so the flag can be cleared inline. It
+        // used to be a `defer` that spawned a second Task to hop back here,
+        // which deadlocked every CLI path: those run the engine inside
+        // `MainActor.assumeIsolated`, so the main thread is *inside* the actor
+        // and no queued hop can ever run.
         scanTask = Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.scanTask = nil } }
             var fresh: [String: TokenTotals] = [:]
             for session in sessions {
-                if Task.isCancelled { return }
+                if Task.isCancelled { break }
                 fresh[session.sessionId] = await scanner.totals(
                     cwd: session.cwd, sessionId: session.sessionId)
             }
-            await scanner.prune(keeping: live)
-            guard !Task.isCancelled else { return }
-            self?.tokens = fresh
+            if !Task.isCancelled {
+                await scanner.prune(keeping: live)
+                self?.tokens = fresh
+            }
+            // Cleared on every exit, cancelled included. An early `return` here
+            // used to leave it set, and the guard above then refused every
+            // later scan for the life of the process.
+            self?.scanTask = nil
         }
     }
 

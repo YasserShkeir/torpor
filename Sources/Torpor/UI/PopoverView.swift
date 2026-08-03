@@ -428,7 +428,11 @@ struct FirstRunView: View {
 
             Divider()
 
-            Text("Usage comes from a small script Torpor adds to your Claude Code statusline. No credentials, no network calls, and your prompt looks the same.")
+            // "your prompt looks the same" on its own was false for the common
+            // case: Claude Code ships no statusline, so most people gain one.
+            // The Account tab has said so all along; the first thing a new user
+            // reads did not.
+            Text("Usage comes from a small script Torpor adds to your Claude Code statusline. No credentials, no network calls. It runs whatever statusline you already had, so your prompt looks the same — if you had none, it prints the model and folder.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
