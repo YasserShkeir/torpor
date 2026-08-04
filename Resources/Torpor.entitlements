@@ -2,16 +2,40 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Torpor revives a hibernated session by telling Terminal or iTerm to run
-         a command in the tab the session was already living in. Under the
-         hardened runtime that Apple requires for notarisation, sending an Apple
-         event to another application is blocked without this. The user still
-         gets the OS consent dialog on first use; this only makes it possible to
-         ask. NSAppleEventsUsageDescription in Info.plist supplies the wording. -->
-    <key>com.apple.security.automation.apple-events</key>
-    <true/>
+    <!-- Torpor requests no entitlements at all.
 
-    <!-- Deliberately absent, recorded so nobody adds them speculatively:
+         This dict is deliberately empty, and that emptiness is the point of the
+         file: the hardened runtime's defaults are the whole of what Torpor asks
+         for, so there is no capability here to widen by accident.
+
+         com.apple.security.automation.apple-events — REMOVED, and worth reading
+         before anyone adds it back. Torpor used to send Apple events to Terminal
+         and iTerm, to run a hibernated session's resume command in the tab it
+         had died in. That is gone: restoring a session is now one action —
+         copying its command to the clipboard — and nothing in the app sends an
+         Apple event to another process. See SessionControl for the whole closed
+         search space behind that decision (TIOCSTI is EPERM, the `code` CLI has
+         no exec flag, vscode:// reaches extensions only, and synthetic
+         keystrokes would need Accessibility).
+
+         Dropping it is a real reduction in what Torpor can do: macOS will now
+         never show this app an Automation consent dialog, and could not grant it
+         control of another application even if the user tried. An app that reads
+         other processes' memory and sends them signals should not also be able
+         to drive Terminal.
+
+         Notifier still calls NSAppleScript, for `display notification` when
+         UNUserNotificationCenter is unavailable (an unbundled `swift run`
+         build). That needs neither this entitlement nor
+         NSAppleEventsUsageDescription, because it is not an inter-process event.
+         Measured rather than assumed: an ad-hoc-signed .app with the hardened
+         runtime and an empty entitlements set, launched as its own responsible
+         process, ran `display notification` successfully and was refused
+         `tell application "Finder"` with -1743, "Not authorized to send Apple
+         events to Finder". So the notification path survives an empty file and
+         the automation path is genuinely closed.
+
+         Also deliberately absent, recorded so nobody adds them speculatively:
 
          com.apple.security.cs.disable-library-validation
              Sparkle only needs this when the framework is signed by a different

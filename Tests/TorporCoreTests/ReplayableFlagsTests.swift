@@ -144,12 +144,12 @@ func inlineJSONValuesAreNeitherReplayedNorPersisted(_ flag: String) throws {
     ("/Applications/Claude.app/Contents/bin/claude", "cli"),
     ("/usr/local/bin/claude", "claude-vscode"),
 ])
-func hostedEntrypointsReviveWithPlainClaude(_ testCase: (String, String)) {
-    #expect(record(executable: testCase.0, entrypoint: testCase.1).reviveExecutable == "claude")
+func hostedEntrypointsRestoreWithPlainClaude(_ testCase: (String, String)) {
+    #expect(record(executable: testCase.0, entrypoint: testCase.1).restoreExecutable == "claude")
 }
 
 @Test func aPlainCLISessionKeepsItsOwnBinary() {
-    #expect(record(executable: "/usr/local/bin/claude", entrypoint: "cli").reviveExecutable
+    #expect(record(executable: "/usr/local/bin/claude", entrypoint: "cli").restoreExecutable
             == "/usr/local/bin/claude")
 }
 
@@ -158,5 +158,5 @@ func hostedEntrypointsReviveWithPlainClaude(_ testCase: (String, String)) {
 /// update, and a fortnight-old record would otherwise run a path that is gone.
 @Test func aVanishedExecutablePathFallsBackToArgvZero() {
     #expect(record(executable: "claude",
-                   executablePath: "/nonexistent/bin/claude").reviveExecutable == "claude")
+                   executablePath: "/nonexistent/bin/claude").restoreExecutable == "claude")
 }

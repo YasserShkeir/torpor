@@ -40,11 +40,10 @@ private let hostileNames = [
         return String(decoding: output, as: UTF8.self)
     }
 
-    /// Exactly what `SessionControl.revive` composes, so this test breaks if
+    /// Exactly the line that goes on the clipboard, so this test breaks if
     /// either half of it moves.
-    private func reviveCommand(cwd: String, arguments: [String] = []) -> String {
-        let session = record(cwd: cwd, arguments: arguments)
-        return "cd \(shellQuote(session.cwd)) && clear && \(session.resumeCommand)"
+    private func restoreCommand(cwd: String, arguments: [String] = []) -> String {
+        record(cwd: cwd, arguments: arguments).resumeCommandLine
     }
 
     /// The load-bearing test: a real `/bin/sh` must land in the directory whose
@@ -85,18 +84,17 @@ private let hostileNames = [
             atPath: target.appendingPathComponent("landed").path))
     }
 
-    /// The whole revive command, not just the `cd`: the session id and every
+    /// The whole restore command, not just the `cd`: the session id and every
     /// replayed value pass through the same quoting.
-    @Test func theComposedReviveCommandQuotesEveryPartIndependently() throws {
+    @Test func theComposedRestoreCommandQuotesEveryPartIndependently() throws {
         let temp = try TempDir()
         defer { temp.remove() }
         let target = try temp.makeDirectory(named: "it's a project")
         let shared = try temp.makeDirectory(named: "shared dir")
 
-        let command = reviveCommand(cwd: target.path,
-                                    arguments: ["--add-dir", shared.path, "--model", "opus"])
+        let command = restoreCommand(cwd: target.path,
+                                     arguments: ["--add-dir", shared.path, "--model", "opus"])
         #expect(command.hasPrefix("cd '"))
-        #expect(command.contains("&& clear && "))
         #expect(command.contains(shellQuote(shared.path)))
         #expect(command.contains("--resume '11111111-2222-3333-4444-555555555555'")
                 || command.contains("--resume 11111111-2222-3333-4444-555555555555"))
@@ -134,16 +132,28 @@ private let hostileNames = [
         #expect(shellQuote("$HOME").hasPrefix("'"))
     }
 
-    /// The shell layer's output is *not* safe to drop into an AppleScript
-    /// string literal, which is why `SessionControl` escapes it a second time
-    /// and why the order of the two is fixed. If this ever stops being true,
-    /// the second layer looks redundant — it is not.
-    @Test func theShellLayerEmitsCharactersAnAppleScriptLiteralCannotHold() throws {
+    /// There is exactly one escaping layer now, and this is it.
+    ///
+    /// There used to be two: shell quoting, then an AppleScript string-literal
+    /// escape applied on top, because the line was handed to Terminal or iTerm
+    /// over an Apple event. Nothing scripts a terminal any more — the line goes
+    /// on the clipboard and a human pastes it — so the second layer is gone, and
+    /// a directory name containing a quote or a backslash has to survive the
+    /// remaining one on its own. Run against a real `/bin/sh`, because the whole
+    /// point is what a shell does with it.
+    @Test func aDirectoryNameWithQuotesAndBackslashesSurvivesTheOnlyEscapingLayer() throws {
         let temp = try TempDir()
         defer { temp.remove() }
-        let target = try temp.makeDirectory(named: #"quote"and\backslash"#)
-        let command = reviveCommand(cwd: target.path)
+        let target = try temp.makeDirectory(named: #"quote"and\backslash'and"#)
+        let command = restoreCommand(cwd: target.path)
+        // The characters really are in there, so the quoting is doing work.
         #expect(command.contains("\""))
         #expect(command.contains("\\"))
+
+        let cd = String(command.prefix(upTo: command.range(of: " && ")!.upperBound))
+        _ = try runShell(cd + "printf ok > landed", from: temp.url)
+        #expect(FileManager.default.fileExists(
+            atPath: target.appendingPathComponent("landed").path))
+        #expect(!temp.exists("landed"))
     }
 }

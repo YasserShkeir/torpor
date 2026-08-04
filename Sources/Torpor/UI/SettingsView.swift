@@ -698,7 +698,7 @@ struct SessionsTab: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle("Group sessions by project folder", isOn: $engine.preferences.groupByProject)
                         .font(.callout)
-                    Text("A group whose sessions are all idle can be hibernated in one click.")
+                    Text("A group whose sessions are all idle can be hibernated together, from the moon button on its header. It asks first.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -714,19 +714,14 @@ struct SessionsTab: View {
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Reopening a hibernated session").font(.headline)
-                    Picker("Open sessions in", selection: $engine.preferences.launchTerminal) {
-                        Text("Terminal").tag("Terminal")
-                        Text("iTerm").tag("iTerm")
-                    }
-                    .pickerStyle(.segmented)
-                    Text("Terminal and iTerm are the only terminals macOS lets Torpor script by tab, so only sessions from those come back where they left — and only while that tab is still open. macOS asks for Automation permission the first time. A session from VS Code, Cursor, Warp or Ghostty can't be typed into at all: reviving one copies its command and brings that app forward for you to paste, and this picker doesn't apply to it.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Divider()
+                // There is deliberately no setting here for how a hibernated
+                // session comes back. There is one way — copy its command and
+                // paste it where you want it — so there is nothing to choose.
+                // The picker that used to sit here ("open sessions in Terminal
+                // / iTerm") chose which app Torpor opened a window in, and it
+                // applied to nobody whose sessions lived in VS Code, Cursor,
+                // Warp or Ghostty, which on the developer's own machine was all
+                // nine of them.
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Idle threshold").font(.headline)
@@ -747,7 +742,7 @@ struct SessionsTab: View {
                     // after enabling, so at the moment of the decision the
                     // label was the only text on screen and it said nothing
                     // about ending processes.
-                    Label("Ends idle sessions without asking, and notifies you. The conversation is saved and reopens in one click. Sessions that are working, frozen, or whose status Torpor can't read are never touched.",
+                    Label("Ends idle sessions without asking, and notifies you. The conversation is kept, and each ended session leaves a command you copy from the menu bar and paste into a terminal to resume it — Torpor never reopens anything itself. Sessions that are working, frozen, or whose status Torpor can't read are never touched.",
                           systemImage: "shield.lefthalf.filled")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

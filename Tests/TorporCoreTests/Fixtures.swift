@@ -81,8 +81,6 @@ func record(cwd: String = "/tmp/p",
             executablePath: String? = nil,
             entrypoint: String? = "cli",
             arguments: [String] = [],
-            tty: String? = nil,
-            hostApplication: String? = nil,
             effort: String? = nil) -> HibernatedSession {
     HibernatedSession(sessionId: "11111111-2222-3333-4444-555555555555",
                       cwd: cwd,
@@ -94,8 +92,6 @@ func record(cwd: String = "/tmp/p",
                       reclaimedBytes: 0,
                       version: "2.1.220",
                       entrypoint: entrypoint,
-                      tty: tty,
-                      hostApplication: hostApplication,
                       effort: effort)
 }
 

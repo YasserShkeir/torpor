@@ -140,9 +140,9 @@ xcrun stapler validate /Applications/Torpor.app
 `accepted … source=Notarized Developer ID` and a valid ticket is the state a
 release is supposed to be in.
 
-The quieter fix is the grants. macOS binds Automation and Keychain consent to
-the signing identity, and every ad-hoc build had a different one, so Torpor
-re-asked for Terminal control after every update. A stable Developer ID means it
+The quieter fix is the grants. macOS binds Keychain consent to the signing
+identity, and every ad-hoc build had a different one, so a user who had imported
+a credential got asked again after every update. A stable Developer ID means it
 asks once, ever.
 
 What notarisation is not: Apple vouching for what Torpor does. It is an

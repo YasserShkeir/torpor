@@ -45,17 +45,19 @@ Then two things you can do to one:
 **Freeze** stops a session and everything under it. CPU drops to zero. Unfreeze
 and it carries on.
 
-**Hibernate** ends an idle session and gives back all its memory. One click
-brings it back in the same directory, with the flags it was started with and at
-the effort level it was running at. You never type `--resume`.
+**Hibernate** ends an idle session and gives back all its memory. The
+conversation is kept. **Copy Command** puts one line on your clipboard, and you
+paste it wherever you want to work: it lands you in the same directory, with the
+flags the session was started with, at the effort level it was running at, and
+Claude Code picks the conversation back up.
 
-If the session was in Terminal or iTerm it comes back in the tab it left, still
-in your old window layout. Those two are the only terminals macOS lets an app
-script by tab. A session in VS Code, Cursor, Warp or Ghostty can't be typed into
-by anything — so reviving one copies its command and brings that app forward for
-you to paste, rather than opening a window you didn't ask for. The row says
-which you'll get before you click, and a new Terminal window is still one menu
-item away if that's what you wanted.
+That is the whole of it. Torpor doesn't reopen a terminal for you, and one
+command that works everywhere is worth more than a button whose behaviour
+depends on which terminal you happened to be in. What the line saves you is not
+the typing — it's that `claude --resume` on its own is lossy. It restores the
+conversation and silently drops `--mcp-config`, `--settings`, `--plugin-dir`,
+`--add-dir` and `--model`. Torpor reads the session's argv before it ends
+anything, so what you paste is the command you were actually running.
 
 Your 5-hour or weekly usage sits in the menu bar — you pick which — with a white
 line marking how far through that window you are. Fill behind the line means
@@ -94,9 +96,8 @@ macOS 14+ to run. `swift build` wants Swift 6.0 or newer; the universal build in
 `./scripts/build-app.sh` goes through Xcode's build system, which wants Swift
 6.2.
 
-Reviving a session asks permission to control Terminal or iTerm. macOS binds
-that grant to the signing identity, and the Developer ID does not change from
-build to build, so it asks once rather than again after every update.
+Torpor asks for no Automation permission and drives no other app. Restoring a
+hibernated session is a command on your clipboard and a terminal you chose.
 
 ## Freezing doesn't free memory, and I shipped it saying so
 

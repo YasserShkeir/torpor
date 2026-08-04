@@ -151,11 +151,18 @@ jobs:
           # above only says the signature is internally consistent; an ad-hoc
           # build passes it and is still refused on every machine but this one.
           if [ -n "$SIGNING_IDENTITY" ]; then
-            # The entitlement is checked whether or not we notarised: without it
-            # revive cannot drive Terminal, and that is the feature.
-            codesign -d --entitlements - --xml verify/Torpor.app 2>/dev/null \
-              | grep -q apple-events \
-              || { echo "::error::packaged app lost the apple-events entitlement — revive would fail"; exit 1; }
+            # Inverted, to match scripts/build-app.sh. This used to assert the
+            # apple-events entitlement was PRESENT, back when revive drove
+            # Terminal over Apple events. Nothing sends an Apple event any more,
+            # restoring a session is a command the user pastes, and the
+            # entitlement is gone — so the check now guards its absence.
+            # Shipping it again would let macOS ask a user for Automation
+            # permission Torpor has no use for.
+            if codesign -d --entitlements - --xml verify/Torpor.app 2>/dev/null \
+                 | grep -q apple-events; then
+              echo "::error::packaged app carries the apple-events entitlement — Torpor requests no entitlements"
+              exit 1
+            fi
           fi
           if [ "${NOTARISED:-false}" = "true" ]; then
             xcrun stapler validate verify/Torpor.app

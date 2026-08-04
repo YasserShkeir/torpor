@@ -39,14 +39,20 @@ enum Paths {
     }
 }
 
-/// A session that Torpor terminated and can bring back.
+/// A session that Torpor terminated, and the one command that brings it back.
 ///
 /// `arguments` is the point of the whole record. `claude --resume <id>` is
 /// documented as lossy: it restores conversation history but drops
 /// `--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir` and `--model`.
-/// Because Torpor captures the live argv before terminating, revive can replay
-/// those flags — making the app's resume strictly more faithful than typing the
-/// command by hand.
+/// Because Torpor captures the live argv before terminating, the line it hands
+/// back carries those flags — making it strictly more faithful than the resume
+/// the user would have typed by hand.
+///
+/// Fields are only ever *added* to this type. `tty` and `hostApplication` were
+/// removed when reopening in place was dropped (see `SessionControl`), and a
+/// `hibernated.json` written before that still holds both — the synthesized
+/// decoder ignores keys the struct no longer declares, so those records keep
+/// working. `RestoreCommandTests` pins it.
 struct HibernatedSession: Codable, Identifiable, Hashable {
     var sessionId: String
     var cwd: String
@@ -64,21 +70,6 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
     /// Registry `entrypoint`: "cli", "claude-vscode", … Optional so records
     /// written by earlier versions still decode.
     var entrypoint: String?
-    /// Controlling terminal of the session at the moment it was hibernated,
-    /// e.g. `/dev/ttys016`. The shell that launched it survives, so this is
-    /// how revive reopens the session in the tab it actually died in rather
-    /// than a fresh window. Nil for a session with no controlling terminal at
-    /// all — under launchd, or an ssh login with no pty.
-    var tty: String?
-    /// Which application owned that tty: "Terminal", "iTerm", "VS Code", …
-    ///
-    /// A tty on its own does not say whether the tab can be reached. Every
-    /// session on the development machine has one and every one of them is
-    /// VS Code's, which exposes no scripting API for its integrated terminal —
-    /// so revive cannot return to it, and says so by name rather than opening a
-    /// new window as though nothing was lost. Optional so records written
-    /// before it was captured still decode.
-    var hostApplication: String?
     /// Effort level the session was running at, as Claude Code reported it to
     /// the statusline.
     ///
@@ -90,23 +81,23 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
 
     var id: String { sessionId }
 
-    /// Which binary revive should actually run.
+    /// Which binary the restore command should actually run.
     ///
     /// A session hosted by VS Code or the desktop app is not the CLI: it is a
     /// harness-specific binary that expects stream-json plumbing on stdin and
     /// stdout. Relaunching *that* in a terminal produces a process that reads
-    /// JSON from the keyboard. For any non-CLI entrypoint we revive with the
+    /// JSON from the keyboard. For any non-CLI entrypoint the line names the
     /// ordinary `claude` on PATH instead, which is what the user actually wants
-    /// when they click Revive in a menu bar app.
-    var reviveExecutable: String {
+    /// when they paste it into a terminal.
+    var restoreExecutable: String {
         let hostedPaths = ["/.vscode/extensions/", "/Claude.app/", "/claude.app/"]
         let candidates = [executable, executablePath ?? ""]
         let isHosted = hostedPaths.contains { marker in candidates.contains { $0.contains(marker) } }
         if isHosted || (entrypoint != nil && entrypoint != "cli") { return "claude" }
-        // argv[0] is usually the bare name, which leaves revive depending on
-        // whatever PATH the new shell has after cd-ing into the project. The
-        // kernel's exec path is absolute, so prefer it — but only if it still
-        // exists now, at revive time: it is typically ~/.local/bin/claude, an
+        // argv[0] is usually the bare name, which leaves the command depending
+        // on whatever PATH the pasting shell has after cd-ing into the project.
+        // The kernel's exec path is absolute, so prefer it — but only if it
+        // still exists now: it is typically ~/.local/bin/claude, an
         // installer-owned symlink that moves on every Claude Code update, and a
         // record kept for a fortnight would otherwise run a path that is gone
         // where a bare `claude` would still have resolved. The name check keeps
@@ -149,11 +140,11 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
         return level
     }
 
-    /// The command revive will run. Flags that `--resume` would otherwise drop
+    /// The command the user pastes. Flags that `--resume` would otherwise drop
     /// are re-applied; flags that describe the old invocation's I/O plumbing
-    /// are not, because the revived session runs in a fresh terminal.
+    /// are not, because the restored session runs in a fresh terminal.
     var resumeCommand: String {
-        var parts = [shellQuote(reviveExecutable), "--resume", shellQuote(sessionId)]
+        var parts = [shellQuote(restoreExecutable), "--resume", shellQuote(sessionId)]
         parts.append(contentsOf: replayableFlags().map(shellQuote))
         // Appended rather than merged into the allowlist: `/effort` sets this
         // mid-session, so it was never in argv and `replayable(from:)` has
@@ -168,16 +159,17 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
     }
 
     /// The whole line, `cd` included: one string a user can paste into any
-    /// shell and press Return.
+    /// shell and press Return. This is the only way a hibernated session comes
+    /// back, so it is the only string that has to be right.
     ///
-    /// Deliberately without the `clear` that `revive` inserts. That `clear`
-    /// exists to hide the dead session's scrollback when we reopen *in its own
-    /// tab*; a line the user pastes into a terminal of their choosing has no
-    /// such history to hide, and wiping the scrollback of a tab they picked —
-    /// possibly the one they were reading — is not ours to do.
+    /// Deliberately no `clear`. An earlier version inserted one, to hide the
+    /// dead session's scrollback when Torpor reopened *in the session's own
+    /// tab*; nothing reopens anything now, and wiping the scrollback of a tab
+    /// the user chose to paste into — possibly the one they were reading — was
+    /// never ours to do.
     var resumeCommandLine: String { "cd \(shellQuote(cwd)) && \(resumeCommand)" }
 
-    /// Flags worth carrying across a hibernate/revive cycle, and the flags we
+    /// Flags worth carrying across a hibernate/restore cycle, and the flags we
     /// could not carry faithfully.
     ///
     /// Deliberately an allowlist. The captured argv of a real session contains
@@ -245,8 +237,8 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
                     if !multiValueFlags.contains(arg) { break }
                 }
                 // All of a flag's values or none of them. Keeping `--add-dir
-                // ../shared` while dropping `../lib` would revive a session that
-                // reports file-not-found on half its tree, with nothing said.
+                // ../shared` while dropping `../lib` would restore a session
+                // that reports file-not-found on half its tree, with nothing said.
                 if values.isEmpty || values.contains(where: isInlineJSON) { refused.append(arg) }
                 else { out.append(arg); out.append(contentsOf: values) }
                 index = next
@@ -264,56 +256,50 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
 
     func replayableFlags() -> [String] { Self.replayable(from: arguments).flags }
 
-    /// What Revive is about to do, in one line, *before* the button is pressed.
+    /// `cwd` with the user's home written as `~`.
     ///
-    /// The engine also says where a session landed afterwards, and that notice
-    /// is worth keeping — the CLI has nowhere else to say it, and "your tab was
-    /// closed" is only knowable after the attempt. But it is a poor place to
-    /// learn that the original tab was never reachable: reviving activates
-    /// Terminal, which closes the popover the notice is written into, so the
-    /// sentence explaining the surprise appears on a panel the user is no
-    /// longer looking at. Whether a session can go back where it came from is
-    /// fixed at hibernate time and changes what the button means, so it belongs
-    /// next to the button.
+    /// Only for display. The command itself always carries the absolute path,
+    /// because `~` is the *pasting* shell's home and a line copied under one
+    /// account and run under another must not silently land somewhere else.
+    var displayDirectory: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if cwd == home { return "~" }
+        if cwd.hasPrefix(home + "/") { return "~" + cwd.dropFirst(home.count) }
+        return cwd
+    }
+
+    /// The replayed flags, short enough to sit on one line under a button.
     ///
-    /// Nothing here probes the machine. This renders per row on every poll
-    /// tick, and `ProcProbe.ttyIsLive` walks the whole process table — so
-    /// whether the tab is still *open* is left to the after-the-fact notice,
-    /// which is asked once, on demand.
-    /// Asks `SessionControl.route(for:)` rather than re-deriving the decision.
-    /// The sentence and the button have to be the same choice, and they were
-    /// two copies of one condition before — which is how a sentence starts
-    /// promising a tab the code no longer tries for.
-    func reviveExpectation(fallbackTerminal: String) -> String {
-        switch SessionControl.route(for: self) {
-        case .originalTab:
-            if let host = hostApplication {
-                return "Reopens in its original \(host) tab, or a new window if you've closed it."
-            }
-            // No host was captured: an older record, or a session with no GUI
-            // ancestor at all. Claim only what is actually known.
-            return "Reopens in its original tab if it's still open, otherwise a new \(fallbackTerminal) window."
-        case .handoff:
-            guard let host = hostApplication else {
-                return "Copies the command — no terminal was recorded for this session, so paste it wherever you want it back."
-            }
-            // Reads as a decision, not a failure. Torpor knows exactly which
-            // app the session lived in and knows it cannot type into it, so it
-            // hands the line over rather than opening a window you did not ask
-            // for. Kept to two lines at the popover's width: this renders under
-            // every hibernated row.
-            //
-            // Says where to paste, not that the app will be raised. Revive does
-            // try to raise it, but only succeeds when it is running and Torpor
-            // is itself frontmost — and checking either would mean an
-            // NSWorkspace lookup per row per poll, which is what this property
-            // exists to avoid. The notice afterwards reports what actually
-            // happened; this one promises only what is certain.
-            guard tty != nil else {
-                return "Copies the command to paste back into \(host) — no tty was recorded, so put it in whichever tab you want."
-            }
-            return "Copies the command to paste back into \(host) — Torpor can't type into its tabs."
-        }
+    /// A real session's flags can be `--mcp-config /Users/…/servers.json
+    /// --add-dir ../lib --add-dir ../shared`, which wraps a caption into a
+    /// paragraph in a 400pt popover. Past a threshold this names the flags and
+    /// drops their values; the whole line is still one hover away in the
+    /// tooltip, and `--resume-command` prints it verbatim.
+    var flagSummary: String? {
+        let flags = replayableFlags()
+        guard !flags.isEmpty else { return nil }
+        let full = flags.joined(separator: " ")
+        guard full.count > 44 else { return full }
+        let names = flags.filter { $0.hasPrefix("-") }
+        return names.isEmpty ? full : names.joined(separator: " ")
+    }
+
+    /// What pasting the command actually does, said before it is copied.
+    ///
+    /// This is the whole promise of the hibernated row, and it is deliberately
+    /// specific: a line that only said "copies a command" gives nobody a reason
+    /// to paste it. The directory, the flags and the effort level are the three
+    /// things `claude --resume <id>` on its own would lose, so they are the
+    /// three worth naming — the effort level especially, because `/effort`
+    /// never reaches argv and this is the only place in the app it appears.
+    ///
+    /// A pure read of the record: it renders per row on every poll tick, so
+    /// nothing here touches the process table or the filesystem.
+    var restoreSummary: String {
+        var line = "Paste it into any terminal: it moves to \(displayDirectory) and resumes this session"
+        if let flags = flagSummary { line += " with \(flags)" }
+        if let effort = replayableEffort { line += ", at \(effort) effort" }
+        return line + "."
     }
 }
 
@@ -327,8 +313,8 @@ func shellQuote(_ s: String) -> String {
 /// A store could not be written, or was not safe to write.
 ///
 /// Surfaced rather than swallowed: hibernate must refuse when the record fails
-/// to land, because the record is the only copy of the argv a revive can be
-/// rebuilt from.
+/// to land, because the record is the only copy of the argv the restore
+/// command is rebuilt from.
 enum StoreError: LocalizedError {
     case writeFailed(URL, Error)
     case unreadable(URL, String)
@@ -435,7 +421,11 @@ struct Preferences: Codable {
     var autoHibernateEnabled = false
     var autoHibernateIdleMinutes: Double = 120
     var autoHibernateFootprintMB: Double = 300
-    var launchTerminal = "Terminal"   // or "iTerm"
+    // `launchTerminal` ("Terminal" or "iTerm") used to live here, choosing which
+    // app Torpor opened a window in. Nothing opens a window any more — restoring
+    // is a command the user pastes wherever they want it — so the setting had no
+    // effect to have. A file that still carries the key simply drops it: the
+    // overlay in `load()` only copies keys the defaults still declare.
     var notificationsEnabled = true
     /// Group the session list by working directory.
     var groupByProject = true
@@ -637,7 +627,7 @@ final class HibernationStore: @unchecked Sendable {
             decoded = try decoder.decode([HibernatedSession].self, from: Data(contentsOf: url))
         } catch {
             // Deliberately keeps the in-memory copy. Each record holds the only
-            // copy of the argv its revive needs, and zeroing here made a
+            // copy of the argv its restore command needs, and zeroing here made a
             // transient read error look like an empty store — which the next
             // reconcile pass would then write back over the file.
             failure = error.localizedDescription
@@ -677,8 +667,8 @@ final class HibernationStore: @unchecked Sendable {
     /// Without the rollback, a record that failed to reach disk is still in
     /// memory and gets written by the *next* session's successful persist — so
     /// a batch hibernate where one write fails transiently ends up publishing a
-    /// Hibernated entry, with a live Revive button, for a session that was never
-    /// terminated.
+    /// Hibernated entry, offering a restore command, for a session that was
+    /// never terminated.
     private func mutate(_ body: (inout [HibernatedSession]) -> Void) throws {
         try lock.withLock {
             let snapshot = storage

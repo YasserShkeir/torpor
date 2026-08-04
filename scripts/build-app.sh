@@ -82,9 +82,9 @@ for inner in "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/
 done
 codesign "${SIGN_ARGS[@]}" "$APP/Contents/Frameworks/Sparkle.framework"
 
-# Entitlements go on the app alone. Sparkle's helpers get the hardened runtime
-# but not Torpor's Apple-events permission: an updater has no business holding
-# it, and granting it there would widen what a compromised helper could drive.
+# Entitlements go on the app alone. The file is deliberately an empty dict —
+# Torpor requests nothing — so this is now about pinning that emptiness rather
+# than granting anything. Sparkle's helpers are signed without it.
 APP_SIGN_ARGS=("${SIGN_ARGS[@]}")
 if [ -n "${IDENTITY:-}" ]; then
     ENTITLEMENTS="$ROOT/Resources/Torpor.entitlements"
@@ -96,9 +96,16 @@ codesign "${APP_SIGN_ARGS[@]}" "$APP"
 codesign --verify --deep --strict "$APP" && echo "    signature verifies"
 if [ -n "${IDENTITY:-}" ]; then
     echo "    signed with: $IDENTITY"
-    codesign -d --entitlements - --xml "$APP" 2>/dev/null \
-        | grep -q "apple-events" && echo "    apple-events entitlement present" \
-        || { echo "    apple-events entitlement MISSING — revive would fail" >&2; exit 1; }
+    # Inverted on purpose. This used to assert the Apple-events entitlement was
+    # PRESENT, back when revive drove Terminal over Apple events. Nothing sends
+    # an Apple event any more, so the entitlement is gone and the check now
+    # guards its absence: shipping it again would let macOS ask a user for
+    # Automation permission Torpor has no use for. See Resources/Torpor.entitlements.
+    if codesign -d --entitlements - --xml "$APP" 2>/dev/null | grep -q "apple-events"; then
+        echo "    apple-events entitlement PRESENT — Torpor requests no entitlements; remove it" >&2
+        exit 1
+    fi
+    echo "    requests no entitlements (no Automation permission is ever asked for)"
 else
     echo "    ad-hoc signed (set IDENTITY to sign with Developer ID)"
 fi

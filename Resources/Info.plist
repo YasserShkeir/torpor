@@ -20,8 +20,10 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>Torpor opens a new terminal window to bring a hibernated Claude Code session back, so you never have to retype the resume command.</string>
+	<!-- NSAppleEventsUsageDescription is deliberately absent. Torpor sends no
+	     Apple events to other applications, so macOS has no reason to ask the
+	     user for Automation permission and no wording to show if it did. See
+	     Resources/Torpor.entitlements. -->
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT licensed.</string>
 	<key>SUAutomaticallyUpdate</key>

@@ -7,6 +7,20 @@ import UserNotifications
 /// When Torpor is run unbundled (say, straight out of `swift run` during
 /// development) it silently fails, so we fall back to AppleScript's
 /// `display notification`, which has no such requirement.
+///
+/// This is the only `NSAppleScript` left in Torpor, and it survives the app
+/// requesting no entitlements at all. `display notification` is a Standard
+/// Additions command handled by the current application: no Apple event leaves
+/// the process, so it needs neither `com.apple.security.automation.apple-events`
+/// nor `NSAppleEventsUsageDescription`.
+///
+/// Measured, not assumed: an ad-hoc-signed .app with the hardened runtime and an
+/// empty entitlements set, launched as its own responsible process, ran
+/// `display notification` successfully in the same run that
+/// `tell application "Finder"` was refused with -1743, "Not authorized to send
+/// Apple events to Finder". If this line ever grows a `tell application` it will
+/// start failing silently, and the fix is to stop doing that rather than to add
+/// the entitlement back — see `Resources/Torpor.entitlements`.
 final class Notifier {
 
     private var authorized = false

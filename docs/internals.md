@@ -71,44 +71,53 @@ counts, so summing it double-counts everything. And a record carrying neither
 `message.id` nor `requestId` needs its own identity, or every such record collides
 on one key and only the largest survives.
 
-## Reviving into the original tab
+## Why Torpor reopens nothing
 
-Killing `claude` leaves its parent shell alive, so the tab is still sitting at a
-prompt. Torpor records the controlling tty and matches it against open Terminal
-and iTerm tabs.
+Restoring a hibernated session is one command on the clipboard, pasted into a
+terminal the user picked. Torpor drives no other application. This section is
+here because reopening the session in place looks obviously achievable, it was
+built once, and every route to it is closed for reasons that only show up when
+you measure them.
 
-The tty does not come from `~/.claude/sessions/<pid>.json`. That file holds cwd,
-entrypoint, kind, name, nameSource, peerProtocol, pid, procStart, sessionId,
-startedAt, status, statusUpdatedAt, updatedAt and version — there is no `tty`
-field and never was. It is read off the live process instead, at hibernate time,
-*before* the signal: once the process exits the kernel has no controlling
-terminal for it.
+Killing `claude` leaves its parent shell alive, so the tab it died in is still
+sitting at a prompt, which is what makes the idea tempting. Reaching that tab is
+another matter. Terminal and iTerm are the whole scriptable set. VS Code,
+Cursor, Warp and Ghostty cannot be reached at all:
 
-A tty on its own doesn't say whether the tab can be reached. Every session on
-the development machine has one, and all of them are VS Code's. So the parent
-chain is walked as well — `claude → zsh → Code Helper → Code` — skipping helper
-processes, which Launch Services either doesn't know or reports as
-`.prohibited`, until a real application turns up. Terminal and iTerm are the
-whole scriptable set; VS Code, Cursor, Warp and Ghostty are not, and `TIOCSTI`
-is not a way round it (measured: EPERM, a process may not inject input into a
-tty it doesn't control). Nor is the `code` CLI, whose whole option list is diff,
-merge, add, remove, goto, new-window, reuse-window, agents, wait, locale,
-user-data-dir and profile — it opens files and folders and nothing else. Nor
-`vscode://`, which routes to extensions only. Synthetic keystrokes through
-System Events do work, and are declined: Accessibility is a far broader grant
-than Automation, anything can steal focus between `activate` and `keystroke`,
-and it would reach whichever terminal the editor focuses rather than the tab the
-session died in.
+- `TIOCSTI` returns EPERM (measured). A process may not inject input into a tty
+  it does not control.
+- The `code` CLI has no command-execution flag. Its whole option list is diff,
+  merge, add, remove, goto, new-window, reuse-window, agents, wait, locale,
+  user-data-dir and profile. It opens files and folders and nothing else.
+- `vscode://` routes to extensions only.
+- Synthetic keystrokes through System Events do work, and were declined.
+  Accessibility is a far broader grant than Automation, anything can steal focus
+  between `activate` and `keystroke`, and the text would land in whichever
+  terminal has focus rather than the one meant.
 
-So those sessions get the command on the clipboard and their editor brought
-forward, which is told to the user before the button is pressed as well as
-after. A new window remains available from the row's menu for anyone who wants
-one.
+Which left a feature that worked for the two terminals a user might happen to be
+in and not the four they might equally happen to be in — conditional on
+something nobody chooses deliberately, and impossible to describe on a button.
+One command that always does exactly one thing is the smaller promise and the
+true one. It also means Torpor sends no AppleEvents and asks for no Automation
+permission.
 
-A VS Code-*hosted* binary is a separate matter and is refused rather than
-relaunched somewhere it won't work. A CLI session that merely happens to be
+A tty would never have settled it either, which is the part that surprised me.
+Every session on the development machine has a controlling terminal and all of
+them are VS Code's, so a tty tells you a session has a terminal and nothing about
+whether you can reach it. Answering that meant walking the parent chain —
+`claude → zsh → Code Helper → Code` — skipping helper processes, which Launch
+Services either doesn't know or reports as `.prohibited`, until a real
+application turns up. All that to arrive at "no".
+
+What still matters is the binary, and that comes from the record, not from the
+tab. A session hosted by VS Code or the desktop app is not the CLI: it expects
+stream-json plumbing on stdin and stdout, and relaunching *that* in a terminal
+gives you a process reading JSON from the keyboard. So the command names a bare
+`claude` for any non-`cli` entrypoint, or any executable path under
+`/.vscode/extensions/` or `Claude.app`. A CLI session that merely happens to be
 running inside VS Code's integrated terminal is an ordinary `cli` entrypoint and
-revives normally.
+gets its real executable path.
 
 ## Effort
 

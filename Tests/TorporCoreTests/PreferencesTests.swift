@@ -48,7 +48,6 @@ import Testing
     @Test func anUnknownMetricDoesNotCostTheOtherSettingsInTheSameFile() throws {
         let preferences = try decode(overriding: [
             "menuBarMetric": "memory",
-            "launchTerminal": "iTerm",
             "groupByProject": false,
             "pollSeconds": 11,
             "notifyQuotaPercent": 65,
@@ -56,7 +55,6 @@ import Testing
             "authMode": "pastedToken",
         ])
         #expect(preferences.menuBarMetric == .fiveHour)
-        #expect(preferences.launchTerminal == "iTerm")
         #expect(preferences.groupByProject == false)
         #expect(preferences.pollSeconds == 11)
         #expect(preferences.notifyQuotaPercent == 65)
@@ -133,7 +131,6 @@ import Testing
         preferences.memoryFigure = .reclaimable
         preferences.timeMarker = .both
         preferences.colorMode = .monochrome
-        preferences.launchTerminal = "iTerm"
         preferences.hideWhenIdle = true
         preferences.launchAtLogin = true
         preferences.autoHibernateEnabled = true
@@ -151,7 +148,6 @@ import Testing
         #expect(back.memoryFigure == .reclaimable)
         #expect(back.timeMarker == .both)
         #expect(back.colorMode == .monochrome)
-        #expect(back.launchTerminal == "iTerm")
         #expect(back.hideWhenIdle == true)
         #expect(back.launchAtLogin == true)
         #expect(back.autoHibernateEnabled == true)

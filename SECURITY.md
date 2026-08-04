@@ -20,7 +20,10 @@ most menu bar apps do not:
   `security delete-generic-password -s dev.torpor.Torpor` does.
 - **Process signals.** Hibernate sends `SIGTERM` (escalating to `SIGKILL`) and
   Freeze sends `SIGSTOP`, to Claude Code sessions and their child processes.
-- **AppleEvents**, to open a terminal window when reviving a session.
+- **The clipboard**, when you ask for the command that restores a hibernated
+  session. Torpor writes to it; it never reads it. That command is the only way
+  a hibernated session comes back, and running it is yours to do — Torpor sends
+  no AppleEvents, launches nothing, and controls no other app.
 - **`https://yassershkeir.github.io/torpor/appcast.xml`**, once a day, to see
   whether there is an update. This is the only outbound request Torpor makes on
   default settings, and Sparkle makes it, not Torpor's own code. It sends what

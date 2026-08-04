@@ -39,8 +39,9 @@ final class Engine: ObservableObject {
     ///
     /// An unreadable store is not an empty one, and the difference matters more
     /// here than anywhere else in the app: each record holds the only copy of
-    /// the argv a revive rebuilds from. Reporting "nothing hibernated" would
-    /// tell someone their sessions are gone at the exact moment they are not.
+    /// the argv the restore command is rebuilt from. Reporting "nothing
+    /// hibernated" would tell someone their sessions are gone at the exact
+    /// moment they are not.
     @Published private(set) var hibernationLoadFailure: String?
     @Published private(set) var quota: QuotaSnapshot?
     /// The two sources are kept apart and merged into `quota` on every write.
@@ -57,7 +58,8 @@ final class Engine: ObservableObject {
     @Published private(set) var statuslineState: StatuslineInstaller.State = .notInstalled
     @Published private(set) var lastError: String?
     /// Non-error feedback for an action that succeeded but did something worth
-    /// mentioning — reviving into a new window rather than the original tab.
+    /// mentioning — a batch hibernate's total, or what just went on the
+    /// clipboard.
     @Published private(set) var lastNotice: String?
     @Published private(set) var credits = CreditBalance()
     @Published private(set) var console: ConsoleUsage?
@@ -68,7 +70,8 @@ final class Engine: ObservableObject {
     /// Session ids being hibernated right now.
     ///
     /// The reconcile loop below drops any record whose session is live again,
-    /// which is how a session revived outside Torpor stops appearing twice. But
+    /// which is how a session brought back outside Torpor stops appearing
+    /// twice. But
     /// a session being hibernated is *still live* for the whole SIGTERM grace
     /// period, and the poll timer is shorter than that grace period, so the
     /// loop was deleting the record the hibernate had just written — taking the
@@ -343,9 +346,10 @@ final class Engine: ObservableObject {
         registryLooksBroken = result.looksBroken
 
         store.reload()
-        // A session resumed outside Torpor — the user typing `claude --resume`
-        // themselves — would otherwise sit in both lists forever, offering a
-        // Revive button that opens a second terminal on the same conversation.
+        // A session that came back — by pasting Torpor's command, or by the
+        // user typing `claude --resume` themselves — would otherwise sit in both
+        // lists forever, offering a command that starts a second process on the
+        // same conversation.
         let live = Set(loaded.map(\.sessionId))
         if sideEffects {
             for record in store.sessions
@@ -603,39 +607,22 @@ final class Engine: ObservableObject {
         }
     }
 
-    func revive(_ record: HibernatedSession) {
-        revive(record, destination: .automatic)
-    }
-
-    /// A new terminal window, because that is what was asked for — offered
-    /// beside Revive for the sessions whose own tab cannot be reached, where
-    /// the automatic answer is a handoff rather than a window.
-    func reviveInNewWindow(_ record: HibernatedSession) {
-        revive(record, destination: .newWindow)
-    }
-
-    private func revive(_ record: HibernatedSession,
-                        destination: SessionControl.ReviveDestination) {
-        do {
-            let outcome = try SessionControl.revive(
-                record, terminal: preferences.launchTerminal, destination: destination)
-            lastError = nil
-            lastNotice = SessionControl.notice(for: outcome, record: record)
-        } catch {
-            lastError = error.localizedDescription
-        }
-        refresh()
-    }
-
-    /// The command revive would run, on the clipboard, without reviving.
+    /// Put a hibernated session's restore command on the clipboard.
     ///
-    /// Worth having even for a session whose tab *is* reachable: it is how
-    /// someone checks what Torpor is about to run before trusting it with a
-    /// session. The CLI has had this as `--resume-command` all along.
+    /// The only way a hibernated session comes back, and deliberately the only
+    /// one — see `SessionControl` for the whole closed search space behind that
+    /// decision. The record is *not* removed here: the user still has to paste
+    /// the line, and dropping the only copy of the captured argv before they do
+    /// would be unrecoverable. `refresh()` clears it once a live session with
+    /// this id shows up in the registry.
+    ///
+    /// The notice repeats the directory, because the clipboard gives no sign of
+    /// what landed on it and "copied the command" alone is not checkable.
     func copyResumeCommand(_ record: HibernatedSession) {
         SessionControl.copyCommand(for: record)
         lastError = nil
-        lastNotice = "Copied the command for \(record.name) to the clipboard."
+        lastNotice = "Copied the command for \(record.name). "
+            + "Paste it into any terminal — it resumes in \(record.displayDirectory)."
     }
 
     func forget(_ record: HibernatedSession) {
@@ -1049,7 +1036,7 @@ final class Engine: ObservableObject {
                     notifier.post(
                         key: "auto-\(record.sessionId)",
                         title: "Hibernated \(record.name)",
-                        body: "Idle \(Fmt.duration(idle)) · \(Fmt.bytes(record.reclaimedBytes)) reclaimed. Revive from the menu bar."
+                        body: "Idle \(Fmt.duration(idle)) · \(Fmt.bytes(record.reclaimedBytes)) reclaimed. Copy its command from the menu bar to bring it back."
                     )
                 } catch {
                     lastError = error.localizedDescription

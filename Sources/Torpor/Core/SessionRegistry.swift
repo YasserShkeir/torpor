@@ -22,18 +22,6 @@ struct Session: Identifiable, Hashable {
     /// on a session where it was written 43.6h after startedAt.
     var statusChangedAt: Date?
 
-    /// Controlling terminal, e.g. `/dev/ttys004`.
-    ///
-    /// Deliberately *not* decoded from the registry file: it isn't in there.
-    /// The record carries cwd, entrypoint, kind, name, nameSource,
-    /// peerProtocol, pid, procStart, sessionId, startedAt, status,
-    /// statusUpdatedAt, updatedAt and version — and nothing else. This comes
-    /// from the live process instead, which is the only place it exists.
-    var tty: String?
-    /// The application hosting that terminal — "Terminal", "iTerm", "VS Code" —
-    /// or nil when nothing GUI owns it. See `ProcProbe.hostApplication(of:)`.
-    var hostApplication: String?
-
     var ownFootprint: UInt64 = 0
     var ownResident: UInt64 = 0
     var childFootprint: UInt64 = 0
@@ -167,13 +155,6 @@ enum SessionRegistry {
 
             session.ownFootprint = proc.footprint
             session.ownResident = proc.resident
-            // Both read from the live process, alongside footprint and
-            // children, because both die with it: once the session is
-            // terminated the kernel has no tty for it and the parent chain is
-            // gone. Capturing them here is what makes them available to
-            // hibernate, which runs before the signal.
-            session.tty = ProcProbe.tty(pid)
-            session.hostApplication = ProcProbe.hostApplication(of: pid)
 
             // MCP servers are separate processes and are the majority of a
             // session's real cost once you count them.

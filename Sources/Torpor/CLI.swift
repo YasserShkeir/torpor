@@ -31,8 +31,7 @@ enum CLI {
       Torpor --thaw <pid>             SIGCONT it again
       Torpor --hibernate <pid>        Capture argv, terminate, free its memory
       Torpor --preview <pid>          Show what --hibernate would capture, change nothing
-      Torpor --revive <session-id>    Reopen it, or copy its command if its app can't be typed into
-      Torpor --resume-command <id>    Print what --revive would run
+      Torpor --resume-command <id>    Print the command that brings it back (pipe it to pbcopy)
       Torpor --emit-shim <path>       Write the statusline shim for inspection
       Torpor --install-statusline     Install the shim into ~/.claude/settings.json
       Torpor --uninstall-statusline   Remove it, restoring any chained statusline
@@ -43,6 +42,10 @@ enum CLI {
     DIAGNOSTICS
       Torpor --render <dir>           Render the popover and settings offscreen
       Torpor --render-live <path>     Render the menu bar item as it is right now
+
+    A hibernated session comes back one way: paste its resume command into a
+    terminal. --resume-command prints that line and nothing else, so it composes
+    — `Torpor --resume-command <id> | pbcopy`, or `$(...)` straight into a shell.
 
     Memory is phys_footprint, compressed pages included — RSS understates an
     idle session by more than 10x.
@@ -115,7 +118,7 @@ enum CLI {
             if store.sessions.isEmpty { print("Nothing hibernated."); break }
             for record in store.sessions {
                 print("\(record.name)  freed \(Fmt.bytes(record.reclaimedBytes))  \(Fmt.duration(Date().timeIntervalSince(record.hibernatedAt))) ago")
-                print("  \(record.resumeCommand)")
+                print("  \(record.resumeCommandLine)")
             }
 
         case "--emit-shim":
@@ -204,8 +207,8 @@ enum CLI {
             } catch { fail(error.localizedDescription) }
 
         case "--preview":
-            // Dry run: show exactly what hibernate would capture and what
-            // revive would run, without touching the session.
+            // Dry run: show exactly what hibernate would capture and what the
+            // restore command would be, without touching the session.
             guard let raw = arguments.dropFirst(2).first, let pid = Int32(raw) else {
                 usageError("--preview needs a pid")
             }
@@ -225,23 +228,19 @@ enum CLI {
             // Everything flag-shaped that survives neither the allowlist nor the
             // refusal. The one that matters is --dangerously-skip-permissions:
             // it is deliberately not replayed, and a preview that reported only
-            // "1 flags" left the user to discover after the revive that their
+            // "1 flags" left the user to discover after restoring that their
             // permission grant was gone.
             let dropped = droppedFlags(seen: seen, replaying: replayable, refusing: refused)
             // Every field hibernate would capture, or the preview describes a
             // different record than the one --hibernate would write. Omitting
-            // host and effort made this print a resume command without the
-            // --effort the real hibernate appends, and claim a tab was
-            // reachable for a session whose terminal cannot be scripted.
-            let tty = session.tty ?? ProcProbe.tty(pid)
+            // effort made this print a resume command without the --effort the
+            // real hibernate appends.
             let record = HibernatedSession(
                 sessionId: session.sessionId, cwd: session.cwd, name: session.name,
                 executable: executable, executablePath: captured.executablePath,
                 arguments: replayable,
                 hibernatedAt: Date(), reclaimedBytes: session.totalFootprint,
-                version: session.version, entrypoint: session.entrypoint, tty: tty,
-                hostApplication: session.hostApplication
-                    ?? ProcProbe.hostApplication(of: pid),
+                version: session.version, entrypoint: session.entrypoint,
                 effort: QuotaReader.sessionUsage(sessionId: session.sessionId)?.effortLevel)
             // One label column, 12 wide: "would free:" used to sit a character
             // right of everything else, which reads as a stray line.
@@ -253,7 +252,7 @@ enum CLI {
             print("replaying:  \(replayable.isEmpty ? "(none)" : replayable.joined(separator: " "))")
             if !dropped.isEmpty {
                 print("dropping:   \(dropped.joined(separator: " ")) — not on the replay allowlist, "
-                      + "so a revived session starts without them")
+                      + "so a restored session starts without them")
             }
             if !refused.isEmpty {
                 // Only the flag names — the values are the reason they are
@@ -261,16 +260,10 @@ enum CLI {
                 print("refusing:   \(refused.joined(separator: " ")) — carries an inline value Torpor will not store")
                 print("hibernate would refuse this session; nothing would be terminated.")
             }
-            // A tty does *not* mean the tab is reachable — every session in VS
-            // Code's integrated terminal has one, and none of them can be
-            // scripted back to. Same sentence the popover puts under the Revive
+            // The same sentence the popover puts under the Copy Command
             // button, so the two cannot drift.
-            print("terminal:   " + (tty ?? "none")
-                  + (record.hostApplication.map { " in \($0)" } ?? ""))
-            print("on revive:  "
-                  + record.reviveExpectation(
-                        fallbackTerminal: Preferences.load().launchTerminal))
-            print("revive runs:")
+            print("to restore: " + record.restoreSummary)
+            print("the command:")
             print("  \(record.resumeCommandLine)")
 
         case "--hibernate":
@@ -292,7 +285,7 @@ enum CLI {
                     let record = try await SessionControl.hibernate(session: session,
                                                                     store: hibernateStore)
                     print("Hibernated \(record.name), reclaimed \(Fmt.bytes(record.reclaimedBytes)).")
-                    print("Revive with: Torpor --revive \(record.sessionId)")
+                    print("Bring it back with: Torpor --resume-command \(record.sessionId)")
                     exit(0)
                 } catch {
                     FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
@@ -301,30 +294,27 @@ enum CLI {
             }
             dispatchMain()
 
-        case "--revive":
-            guard let id = arguments.dropFirst(2).first else {
-                usageError("--revive needs a session id")
-            }
-            let store = HibernationStore()
-            let record = hibernated(matching: id, in: store, flag: "--revive")
-            do {
-                let outcome = try SessionControl.revive(
-                    record, terminal: Preferences.load().launchTerminal)
-                // The same sentence the popover shows. "Revived <name>." was
-                // silent about the session coming back somewhere other than
-                // where it left, which is the one thing worth saying here.
-                print(SessionControl.notice(for: outcome, record: record))
-            } catch { fail(error.localizedDescription) }
-
         case "--resume-command":
-            // Print what revive *would* run, without running it.
+            // The CLI form of the one restore action. Deliberately prints the
+            // line and nothing else — no banner, no trailing advice — so it can
+            // be substituted or piped.
+            //
+            // Deliberately does NOT also copy to the clipboard when stdout is a
+            // terminal. Three reasons, and they all point the same way: the
+            // pasteboard is shared global state the user did not ask us to
+            // overwrite, and clobbering whatever they had copied to save them a
+            // `| pbcopy` is a bad trade; `pbcopy` already exists, is explicit,
+            // and is the idiom every macOS user already knows; and behaving
+            // differently depending on whether stdout happens to be a tty is
+            // exactly the kind of context-dependent behaviour this whole change
+            // removed from the GUI. One command, one thing.
             guard let id = arguments.dropFirst(2).first else {
                 usageError("--resume-command needs a session id")
             }
             let record = hibernated(matching: id, in: HibernationStore(),
                                     flag: "--resume-command")
-            // The same string the popover's Copy Command puts on the clipboard
-            // and the same one a handoff hands over, so the three cannot drift.
+            // The same string the popover's Copy Command puts on the clipboard,
+            // so the two cannot drift.
             print(record.resumeCommandLine)
 
         case "--render-live":
@@ -471,9 +461,10 @@ enum CLI {
     /// Resolve a session-id prefix to exactly one hibernated record.
     ///
     /// An empty id used to match the first record, because `"".hasPrefix` is
-    /// true for everything — so `--revive "$SESSION"` with the variable unset
-    /// opened a terminal for a session the user never named. An ambiguous
-    /// prefix picked whichever record happened to be first in the file.
+    /// true for everything — so `--resume-command "$SESSION"` with the variable
+    /// unset printed the command for a session the user never named. An
+    /// ambiguous prefix picked whichever record happened to be first in the
+    /// file.
     private static func hibernated(matching id: String,
                                    in store: HibernationStore,
                                    flag: String) -> HibernatedSession {
@@ -497,7 +488,7 @@ enum CLI {
         return record
     }
 
-    /// Flag-shaped arguments that a revive would silently leave behind.
+    /// Flag-shaped arguments the restore command would silently leave behind.
     ///
     /// Derived here rather than in `HibernatedSession.replayable`, which reports
     /// only what it keeps and what it refuses. Values are never flag-shaped —

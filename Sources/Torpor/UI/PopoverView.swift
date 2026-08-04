@@ -1,6 +1,22 @@
 import AppKit
 import SwiftUI
 
+/// The label on the confirm half of every arm-then-confirm hibernate.
+///
+/// One function, because there are three of them — a session row, a project
+/// group, and the header's "Hibernate N idle" — and they drifted. All three used
+/// to read "Hibernate" on *both* halves, so the first click armed something with
+/// nothing on screen changing but a tint, and the second ended processes.
+/// Different words are what makes the second click legibly the commit: the arm
+/// says Hibernate (and ends in an ellipsis, macOS for "this will ask"), the
+/// confirm says End, which is the half that cannot be taken back.
+///
+/// Matches what Forget already does correctly: a distinct word on the armed
+/// button, a separate cancel beside it, and a sentence naming the consequence.
+func hibernateConfirmLabel(_ count: Int) -> String {
+    count == 1 ? "End Session" : "End \(count) Sessions"
+}
+
 struct PopoverView: View {
     @ObservedObject var engine: Engine
     var openSettings: () -> Void
@@ -95,17 +111,25 @@ struct PopoverView: View {
             Spacer(minLength: 6)
 
             if engine.reclaimableFootprint > 0 {
+                // Arm, then commit — and the two states say different words, not
+                // the same word in a different colour. Both buttons used to read
+                // "Hibernate", so the first click looked like it had done
+                // nothing and the second came as a surprise. The armed label
+                // names the irreversible half ("End"), which is also what
+                // distinguishes it from the row's own Hibernate button.
                 if confirmingReclaimAll {
-                    Button("Hibernate \(reclaimableSessions.count)") {
+                    Button(hibernateConfirmLabel(reclaimableSessions.count)) {
                         confirmingReclaimAll = false
                         engine.hibernateIdleSessions()
                     }
                     .controlSize(.small).tint(.orange)
                     .disabled(engine.isBusyWithBatch)
+                    .help("This is the confirm: ends \(reclaimableSessions.count) session\(reclaimableSessions.count == 1 ? "" : "s") now and frees \(Fmt.bytes(engine.reclaimableFootprint)).")
                     Button { confirmingReclaimAll = false } label: {
                         Image(systemName: "xmark").font(.system(size: 8))
                     }
                     .buttonStyle(.borderless).controlSize(.mini)
+                    .accessibilityLabel("Cancel")
                 } else {
                     Button {
                         confirmingReclaimAll = true
@@ -113,13 +137,24 @@ struct PopoverView: View {
                         // Named for what it does. "Reclaim" was a fourth verb
                         // for an action the rest of the app — including this
                         // button's own tooltip — calls hibernate.
+                        //
+                        // No trailing ellipsis here, unlike the session row's
+                        // "Hibernate…". This label already carries a count and a
+                        // byte figure and runs to the edge of the header, so an
+                        // ellipsis on the end reads as the text having been
+                        // clipped rather than as "this will ask first" —
+                        // rendered offscreen it was indistinguishable from
+                        // truncation. The word change on confirm ("End 6
+                        // Sessions") is what makes the second click legible, and
+                        // it does that without a punctuation mark to misread.
                         Label("Hibernate \(reclaimableSessions.count) idle · \(Fmt.bytes(engine.reclaimableFootprint))",
                               systemImage: "moon.zzz.fill")
                             .font(.system(size: 11))
                     }
                     .controlSize(.small)
                     .tint(.orange)
-                    .help("Hibernate \(reclaimableSessions.count) session\(reclaimableSessions.count == 1 ? "" : "s") idle for \(Int(engine.preferences.notifyIdleMinutes)) minutes or more.")
+                    .accessibilityHint("Asks you to confirm before ending anything")
+                    .help("Hibernate \(reclaimableSessions.count) session\(reclaimableSessions.count == 1 ? "" : "s") idle for \(Int(engine.preferences.notifyIdleMinutes)) minutes or more. Asks first.")
                 }
             }
         }
@@ -319,61 +354,69 @@ struct PopoverView: View {
         }
     }
 
-    /// What was freed, how long ago, and the effort level revive will restore.
+    /// What was freed and how long ago.
     ///
-    /// The level is shown because it is the part of the session's configuration
-    /// the user cannot see anywhere else: `/effort` never reaches argv, so
-    /// nothing on the row would otherwise say it survived the round trip. Only
-    /// a level revive will actually pass is shown — advertising one the CLI
-    /// would reject is worse than saying nothing.
+    /// The effort level used to be here too. It moved into `restoreSummary`,
+    /// which says it with the thing it applies to — "at high effort" beside the
+    /// directory and the flags reads as part of a command, where a bare "high
+    /// effort" in a list of memory figures did not.
     private static func hibernatedDetail(_ record: HibernatedSession) -> String {
-        var parts = ["\(Fmt.bytes(record.reclaimedBytes)) freed",
-                     "\(Fmt.duration(Date().timeIntervalSince(record.hibernatedAt))) ago"]
-        if let effort = record.replayableEffort { parts.append("\(effort) effort") }
-        return parts.joined(separator: " · ")
+        "\(Fmt.bytes(record.reclaimedBytes)) freed · "
+            + "\(Fmt.duration(Date().timeIntervalSince(record.hibernatedAt))) ago"
     }
 
     private var hibernatedSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader("Hibernated")
+            // The mechanism, said once, above the rows. Each row then says
+            // where its own command lands. Without this line the section is a
+            // list of ended sessions next to a button, and nothing on screen
+            // tells a first-time user that pasting is the step that brings one
+            // back — the app never does it for them and never will.
+            Text("These sessions have ended. Copy one's command and paste it into a terminal — that is what brings it back.")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             ForEach(engine.hibernated) { record in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
                         Image(systemName: "moon.zzz.fill").foregroundStyle(.indigo)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(record.name).font(.callout)
+                            // Truncated rather than wrapped. "Copy Command" is a
+                            // wider control than the "Revive" it replaced, so a
+                            // long session name that used to fit now has less
+                            // room — and a name wrapping to two lines pushes the
+                            // button out of line with every other row.
+                            Text(record.name).font(.callout).lineLimit(1)
                             Text(Self.hibernatedDetail(record))
                                 .font(.caption2).foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                         Spacer()
-                        // One button with a menu on it, rather than three
-                        // buttons. This row is already carrying a name, a
-                        // detail line, Revive and Forget inside a popover
-                        // narrow enough that the detail line wraps; a third and
-                        // fourth control would push Forget off the end or
-                        // shrink every label to an icon nobody can identify.
-                        // The split button keeps Revive a single click — it is
-                        // what the row is for — and puts the two answers that
-                        // are occasionally right, but never right by default,
-                        // one click deeper where they are still labelled in
-                        // words. The sentence below already says which of the
-                        // two the plain click is going to do.
-                        Menu {
-                            Button("Open in a New \(engine.preferences.launchTerminal) Window") {
-                                engine.reviveInNewWindow(record)
-                            }
-                            .help("Runs the command in a brand new window instead of returning it to where it was.")
-                            Button("Copy Command") { engine.copyResumeCommand(record) }
-                                .help("Puts the exact command Revive would run on the clipboard, and runs nothing.")
+                        // One control, named for the only thing it does.
+                        //
+                        // This was a split button called Revive, whose plain
+                        // click reopened a Terminal or iTerm tab where it could
+                        // and copied the command where it could not. It worked,
+                        // and it still disappointed: a button called Revive that
+                        // sometimes copies is a button you cannot predict, and
+                        // which of the two you got depended on which terminal
+                        // you happened to have opened months ago. Copying is the
+                        // answer that is always available and always the same,
+                        // so it is the whole of the row now. See
+                        // `SessionControl` for why the other half could never be
+                        // made to cover everyone.
+                        Button {
+                            engine.copyResumeCommand(record)
                         } label: {
-                            Text("Revive")
-                        } primaryAction: {
-                            engine.revive(record)
+                            Label("Copy Command", systemImage: "doc.on.doc")
+                                .font(.system(size: 11))
                         }
-                        .menuStyle(.button)
                         .controlSize(.small)
                         .fixedSize()
-                        .accessibilityLabel("Revive \(record.name)")
+                        .accessibilityLabel("Copy the command that restores \(record.name)")
+                        .accessibilityHint("Puts it on the clipboard. Paste it into a terminal to bring the session back.")
+                        // The exact line, verbatim, for anyone who wants to read
+                        // it before trusting it.
                         .help(record.resumeCommandLine)
 
                         if confirmingForget == record.sessionId {
@@ -395,8 +438,8 @@ struct PopoverView: View {
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                             .accessibilityLabel("Forget \(record.name)")
-                            .accessibilityHint("Discards the saved command line. The conversation stays on disk but Torpor can no longer reopen it for you.")
-                            .help("Forget this session. The conversation stays on disk; Torpor loses the command line that reopens it.")
+                            .accessibilityHint("Discards the saved command line. The conversation stays on disk but Torpor can no longer hand you the command that resumes it.")
+                            .help("Forget this session. The conversation stays on disk; Torpor loses the command line that resumes it.")
                         }
                     }
 
@@ -405,13 +448,12 @@ struct PopoverView: View {
                             .font(.system(size: 10)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        // Said before the click, not after it. Reviving
-                        // activates the terminal and closes this popover, so an
-                        // after-the-fact notice about the original tab being
-                        // unreachable lands on a panel nobody is looking at —
-                        // and it changes what the button is going to do.
-                        Text(record.reviveExpectation(
-                            fallbackTerminal: engine.preferences.launchTerminal))
+                        // What the copied line will actually do, said before it
+                        // is copied. The directory, the flags and the effort
+                        // level are precisely what `claude --resume <id>` typed
+                        // by hand would lose, so naming them is what makes this
+                        // line worth pasting rather than retyping.
+                        Text(record.restoreSummary)
                             .font(.system(size: 10)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -473,7 +515,7 @@ struct FirstRunView: View {
                 verb("pause.circle.fill", .cyan, "Freeze",
                      "Pauses a session: no CPU, memory unchanged. Thaw puts it back.")
                 verb("moon.zzz.fill", .orange, "Hibernate",
-                     "Ends a session and gives back its memory. Revive brings it back — in its old tab from Terminal or iTerm, otherwise as a command to paste.")
+                     "Ends a session and gives back its memory. Torpor keeps the exact command that resumes it, flags and all — copy it and paste it into any terminal to pick up where you left off.")
             }
 
             Divider()
@@ -826,17 +868,24 @@ struct ProjectGroupView: View {
                 // never when one is working, and never when one's status is
                 // unknown, because those cannot be judged safe.
                 if group.allIdle {
+                    // Same arm-then-confirm shape as the row and the header, and
+                    // the same rule: the two states must not read alike. Here
+                    // the arm is a moon glyph and the confirm is the words "End
+                    // N Sessions", so the change is unmistakable even at mini
+                    // control size — plus the sentence below appears.
                     if confirming {
-                        Button("Hibernate \(group.sessions.count)") {
+                        Button(hibernateConfirmLabel(group.sessions.count)) {
                             confirming = false
                             engine.hibernateGroup(group)
                         }
                         .controlSize(.mini).tint(.orange)
                         .disabled(engine.isBusyWithBatch)
+                        .help("This is the confirm: ends every session in \(group.name) now.")
                         Button {
                             confirming = false
                         } label: { Image(systemName: "xmark").font(.system(size: 8)) }
                             .buttonStyle(.borderless).controlSize(.mini)
+                            .accessibilityLabel("Cancel")
                     } else {
                         Button {
                             confirming = true
@@ -849,8 +898,8 @@ struct ProjectGroupView: View {
                         .contentShape(Rectangle())
                         .disabled(engine.isBusyWithBatch)
                         .accessibilityLabel("Hibernate all idle sessions in \(group.name)")
-                        .accessibilityHint("Ends \(group.sessions.count) sessions and frees \(Fmt.bytes(group.totalFootprint))")
-                        .help("Hibernate all \(group.sessions.count) idle session\(group.sessions.count == 1 ? "" : "s") in \(group.name) — frees \(Fmt.bytes(group.totalFootprint)).")
+                        .accessibilityHint("Asks you to confirm, then ends \(group.sessions.count) sessions and frees \(Fmt.bytes(group.totalFootprint))")
+                        .help("Hibernate all \(group.sessions.count) idle session\(group.sessions.count == 1 ? "" : "s") in \(group.name) — frees \(Fmt.bytes(group.totalFootprint)). Asks first.")
                     }
                 }
             }
@@ -860,7 +909,7 @@ struct ProjectGroupView: View {
                         in: RoundedRectangle(cornerRadius: 5))
 
             if confirming {
-                Text("Frees \(Fmt.bytes(group.totalFootprint)). Each revives in one click.")
+                Text("Ends \(group.sessions.count) session\(group.sessions.count == 1 ? "" : "s") and frees \(Fmt.bytes(group.totalFootprint)). Each leaves a command you copy to bring it back.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .fixedSize(horizontal: false, vertical: true)
@@ -895,25 +944,29 @@ struct SessionRow: View {
     /// Leads with termination. The previous copy ("frees N and reopens on
     /// demand") described suspend-to-disk, which is not what happens.
     ///
-    /// It also promised "reopens it where it was" to every session, which is
-    /// only true of Terminal and iTerm. This is the sentence someone reads
-    /// while deciding whether to end a session, so it is the worst place in the
-    /// app to be optimistic — the session's host is known here, so say which
-    /// one they are about to get.
+    /// It also promised "reopens it where it was", which was only ever true of
+    /// Terminal and iTerm — and is now true of nothing, because Torpor no
+    /// longer reopens anything. This is the sentence someone reads while
+    /// deciding whether to end a session, so it is the worst place in the app
+    /// to be optimistic: it states the one way the session comes back.
     private var hibernateExplanation: String {
         switch session.declaredStatus {
         case "idle":
-            let freed = Fmt.bytes(session.totalFootprint)
-            guard SessionControl.isScriptable(host: session.hostApplication) else {
-                let host = session.hostApplication.map { " in \($0)" } ?? ""
-                return "Hibernate ends this session and frees \(freed). Reviving copies the command for you to paste back\(host) — Torpor can only reopen a tab in Terminal or iTerm."
-            }
-            return "Hibernate ends this session and frees \(freed). One click reopens it in the tab it left, while that tab is still open."
+            return "Hibernate ends this session and frees \(Fmt.bytes(session.totalFootprint)). It moves to Hibernated, where one click copies the command that resumes it — paste that into any terminal."
         case "busy":
             return "Working. Freeze pauses it; hibernate waits until it's idle."
         default:
             return "Status unknown, so Torpor won't end it. Freeze still works."
         }
+    }
+
+    /// What the armed state says, in place of the explanation above.
+    ///
+    /// The armed state has to be legible from the panel alone, not from having
+    /// remembered clicking. The button changes word, and this sentence appears
+    /// beneath it naming the button that commits — the same shape Forget uses.
+    private var hibernateConfirmation: String {
+        "\(hibernateConfirmLabel(1)) ends it now and frees \(Fmt.bytes(session.totalFootprint)). The conversation is kept: you'll get a command to copy that resumes it exactly as it was."
     }
 
     private var statusColor: Color {
@@ -1079,9 +1132,9 @@ struct SessionRow: View {
 
             Text(session.isFrozen
                  ? "Frozen: no CPU. Memory unchanged — macOS had already compressed most of it."
-                 : hibernateExplanation)
+                 : (confirmingHibernate ? hibernateConfirmation : hibernateExplanation))
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(confirmingHibernate && !session.isFrozen ? .primary : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 6) {
@@ -1097,17 +1150,23 @@ struct SessionRow: View {
                 // route to the same signal is guarded the same way.
                 if session.declaredStatus == "idle" {
                     if confirmingHibernate {
-                        Button("Hibernate") {
+                        Button(hibernateConfirmLabel(1)) {
                             confirmingHibernate = false
                             engine.hibernate(session)
                         }
                         .controlSize(.small).tint(.orange)
+                        .help("This is the confirm: ends it now and frees \(Fmt.bytes(session.totalFootprint)).")
                         Button("Cancel") { confirmingHibernate = false }
                             .controlSize(.small).buttonStyle(.borderless)
                     } else {
-                        Button("Hibernate") { confirmingHibernate = true }
+                        // "Hibernate…" and "End Session" — two clicks, two
+                        // different words. Both used to say "Hibernate", so
+                        // nothing but a tint marked the first click as having
+                        // happened at all.
+                        Button("Hibernate…") { confirmingHibernate = true }
                             .controlSize(.small).tint(.orange)
-                            .help("Ends this session and frees \(Fmt.bytes(session.totalFootprint)). Reopens in one click.")
+                            .accessibilityHint("Asks you to confirm before ending the session")
+                            .help("Ends this session and frees \(Fmt.bytes(session.totalFootprint)). Asks first.")
                     }
                 } else {
                     Text(session.declaredStatus == "busy"

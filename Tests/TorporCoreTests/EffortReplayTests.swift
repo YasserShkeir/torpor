@@ -71,8 +71,8 @@ func anArgvSuppliedEffortIsNotDuplicated(_ argv: [String]) {
 /// A level that survives a round trip through `hibernated.json` — the record is
 /// decoded from disk on every poll, and a field that does not encode is a field
 /// that works until the app is restarted.
-@Test func effortAndHostSurviveTheStore() throws {
-    let session = record(tty: "/dev/ttys004", hostApplication: "VS Code", effort: "xhigh")
+@Test func effortSurvivesTheStore() throws {
+    let session = record(arguments: ["--model", "opus"], effort: "xhigh")
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     let decoder = JSONDecoder()
@@ -80,16 +80,16 @@ func anArgvSuppliedEffortIsNotDuplicated(_ argv: [String]) {
     let restored = try decoder.decode(HibernatedSession.self,
                                       from: try encoder.encode(session))
     #expect(restored.effort == "xhigh")
-    #expect(restored.hostApplication == "VS Code")
-    #expect(restored.tty == "/dev/ttys004")
     #expect(restored.resumeCommand == session.resumeCommand)
 }
 
-/// Records predating both fields still decode. They are the ones sitting in a
-/// real `hibernated.json` right now, and a failed decode is not one lost
-/// setting — `HibernationStore` keeps the whole file rather than overwrite what
-/// it could not read, so every hibernated session would stop being revivable.
-@Test func aRecordWithoutTheNewFieldsStillDecodes() throws {
+/// Records predating `effort` still decode. They are the ones sitting in a real
+/// `hibernated.json` right now, and a failed decode is not one lost setting —
+/// `HibernationStore` keeps the whole file rather than overwrite what it could
+/// not read, so every hibernated session would stop being restorable at once.
+/// (`RestoreCommandTests` covers the other direction: a record carrying the
+/// since-removed `tty` and `hostApplication` keys.)
+@Test func aRecordWithoutTheEffortFieldStillDecodes() throws {
     let json = """
     {"sessionId":"abc","cwd":"/tmp/p","name":"p","executable":"claude",
      "arguments":["--model","opus"],"hibernatedAt":"1970-01-01T00:00:00Z",
@@ -99,6 +99,15 @@ func anArgvSuppliedEffortIsNotDuplicated(_ argv: [String]) {
     decoder.dateDecodingStrategy = .iso8601
     let restored = try decoder.decode(HibernatedSession.self, from: Data(json.utf8))
     #expect(restored.effort == nil)
-    #expect(restored.hostApplication == nil)
+    #expect(restored.replayableEffort == nil)
     #expect(restored.resumeCommand == "claude --resume abc --model opus")
+}
+
+/// The level reaches the line the user actually pastes, not just `resumeCommand`
+/// — and it is the one part of that line assembled from a file Torpor does not
+/// own, so it is worth pinning end to end.
+@Test func theEffortLevelReachesTheCopiedLine() {
+    let session = record(cwd: "/tmp/p", effort: "max")
+    #expect(session.resumeCommandLine.hasSuffix("--effort max"))
+    #expect(session.restoreSummary.contains("max effort"))
 }
