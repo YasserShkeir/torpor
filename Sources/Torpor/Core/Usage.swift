@@ -49,6 +49,16 @@ struct SessionUsage: Equatable {
     /// just the two totals added, not a fifth number to reconcile.
     var contextTokens: Int?
     var contextWindowSize: Int?
+    /// Effort level the session is running at — "low", "medium", "high",
+    /// "xhigh", "max" — as Claude Code reports it.
+    ///
+    /// Per session, like cost, and for a sharper reason than the others: the
+    /// `/effort` slash command changes it for one session mid-conversation, so
+    /// the account-wide snapshot would report whichever session drew its
+    /// statusline last. It is also the *only* way to learn the level at all —
+    /// a `/effort` setting never reaches argv, so hibernate has nothing to
+    /// capture from the process.
+    var effortLevel: String?
     var capturedAt: Date
 }
 
@@ -175,22 +185,46 @@ enum QuotaReader {
                 if !live.isEmpty { try? FileManager.default.removeItem(at: file) }
                 continue
             }
-            guard let payload = object(at: file) else { continue }
-            let cost = payload["cost"] as? [String: Any] ?? [:]
-            let context = payload["context_window"] as? [String: Any] ?? [:]
-            let input = integer(context["total_input_tokens"])
-            let output = integer(context["total_output_tokens"])
-            out[sessionId] = SessionUsage(
-                sessionId: sessionId,
-                costUSD: number(cost["total_cost_usd"]),
-                contextUsedPercentage: number(context["used_percentage"]),
-                contextTokens: (input == nil && output == nil)
-                    ? nil : (input ?? 0) + (output ?? 0),
-                contextWindowSize: integer(context["context_window_size"]),
-                capturedAt: writtenAt(file) ?? Date()
-            )
+            if let usage = usage(at: file, sessionId: sessionId) { out[sessionId] = usage }
         }
         return out
+    }
+
+    /// One session's figures, without the pruning pass.
+    ///
+    /// Hibernate needs the effort level for exactly one session, at the moment
+    /// it captures the record, and must not be the thing that deletes another
+    /// session's cost file as a side effect of asking.
+    static func sessionUsage(sessionId: String) -> SessionUsage? {
+        // The id is built into a path here, and unlike `sessionUsage(live:)` —
+        // which reads ids back off filenames — it arrives from the registry,
+        // where every field is undocumented and optional. A `..` in it would
+        // walk out of the directory. The shim strips the same character class
+        // on the way in; this is the matching check on the way out.
+        guard !sessionId.isEmpty,
+              sessionId.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+        else { return nil }
+        return usage(at: sessionsDirectory.appendingPathComponent("\(sessionId).json"),
+                     sessionId: sessionId)
+    }
+
+    private static func usage(at file: URL, sessionId: String) -> SessionUsage? {
+        guard let payload = object(at: file) else { return nil }
+        let cost = payload["cost"] as? [String: Any] ?? [:]
+        let context = payload["context_window"] as? [String: Any] ?? [:]
+        let effort = payload["effort"] as? [String: Any] ?? [:]
+        let input = integer(context["total_input_tokens"])
+        let output = integer(context["total_output_tokens"])
+        return SessionUsage(
+            sessionId: sessionId,
+            costUSD: number(cost["total_cost_usd"]),
+            contextUsedPercentage: number(context["used_percentage"]),
+            contextTokens: (input == nil && output == nil)
+                ? nil : (input ?? 0) + (output ?? 0),
+            contextWindowSize: integer(context["context_window_size"]),
+            effortLevel: (effort["level"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            capturedAt: writtenAt(file) ?? Date()
+        )
     }
 }
 

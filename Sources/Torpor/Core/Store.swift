@@ -67,8 +67,26 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
     /// Controlling terminal of the session at the moment it was hibernated,
     /// e.g. `/dev/ttys016`. The shell that launched it survives, so this is
     /// how revive reopens the session in the tab it actually died in rather
-    /// than a fresh window. Nil for sessions with no tty (VS Code-hosted).
+    /// than a fresh window. Nil for a session with no controlling terminal at
+    /// all — under launchd, or an ssh login with no pty.
     var tty: String?
+    /// Which application owned that tty: "Terminal", "iTerm", "VS Code", …
+    ///
+    /// A tty on its own does not say whether the tab can be reached. Every
+    /// session on the development machine has one and every one of them is
+    /// VS Code's, which exposes no scripting API for its integrated terminal —
+    /// so revive cannot return to it, and says so by name rather than opening a
+    /// new window as though nothing was lost. Optional so records written
+    /// before it was captured still decode.
+    var hostApplication: String?
+    /// Effort level the session was running at, as Claude Code reported it to
+    /// the statusline.
+    ///
+    /// Captured because `/effort` sets it mid-session, so it is not in argv and
+    /// there is nothing for `replayable(from:)` to find. Stored raw and
+    /// validated at replay time — see `replayableEffort` — so a level a future
+    /// CLI adds is kept on disk rather than discarded at capture.
+    var effort: String?
 
     var id: String { sessionId }
 
@@ -103,12 +121,49 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
         return executable
     }
 
+    /// Effort levels `claude --effort` accepts. Anything else is dropped rather
+    /// than passed through.
+    ///
+    /// Not because the CLI would reject it — measured on 2.1.x, `claude
+    /// --effort ultra` prints "Unknown --effort value 'ultra' — ignoring it"
+    /// and carries on at the default. The reason is `resumeCommand`: the level
+    /// is the one part of that line assembled from a file Torpor does not own,
+    /// and it is appended *unquoted*. Membership of this set is what keeps it a
+    /// bare word. Widen it to a pass-through and `"high; rm -rf ~"` from a
+    /// malformed statusline payload becomes a shell command.
+    static let effortLevels: Set<String> = ["low", "medium", "high", "xhigh", "max"]
+
+    /// The captured effort level, if it is safe to put on the command line.
+    ///
+    /// Nil when nothing was captured, when the level is not one the CLI
+    /// accepts, or when argv already carries `--effort` — that one was typed by
+    /// the user and wins, and emitting a second occurrence would leave the CLI
+    /// to pick between them.
+    var replayableEffort: String? {
+        guard let effort else { return nil }
+        let level = effort.trimmingCharacters(in: .whitespaces).lowercased()
+        guard Self.effortLevels.contains(level) else { return nil }
+        guard !replayableFlags().contains(where: {
+            $0 == "--effort" || $0.hasPrefix("--effort=")
+        }) else { return nil }
+        return level
+    }
+
     /// The command revive will run. Flags that `--resume` would otherwise drop
     /// are re-applied; flags that describe the old invocation's I/O plumbing
     /// are not, because the revived session runs in a fresh terminal.
     var resumeCommand: String {
         var parts = [shellQuote(reviveExecutable), "--resume", shellQuote(sessionId)]
         parts.append(contentsOf: replayableFlags().map(shellQuote))
+        // Appended rather than merged into the allowlist: `/effort` sets this
+        // mid-session, so it was never in argv and `replayable(from:)` has
+        // nothing to carry. Quoted like every other part of this line even
+        // though `effortLevels` guarantees a bare word — the guarantee lives in
+        // a different function, and a line that quotes some of its arguments
+        // and not others invites the next widening of that set to be unsafe.
+        if let level = replayableEffort {
+            parts.append(contentsOf: ["--effort", shellQuote(level)])
+        }
         return parts.joined(separator: " ")
     }
 
@@ -198,6 +253,45 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
     }
 
     func replayableFlags() -> [String] { Self.replayable(from: arguments).flags }
+
+    /// What Revive is about to do, in one line, *before* the button is pressed.
+    ///
+    /// The engine also says where a session landed afterwards, and that notice
+    /// is worth keeping — the CLI has nowhere else to say it, and "your tab was
+    /// closed" is only knowable after the attempt. But it is a poor place to
+    /// learn that the original tab was never reachable: reviving activates
+    /// Terminal, which closes the popover the notice is written into, so the
+    /// sentence explaining the surprise appears on a panel the user is no
+    /// longer looking at. Whether a session can go back where it came from is
+    /// fixed at hibernate time and changes what the button means, so it belongs
+    /// next to the button.
+    ///
+    /// Nothing here probes the machine. This renders per row on every poll
+    /// tick, and `ProcProbe.ttyIsLive` walks the whole process table — so
+    /// whether the tab is still *open* is left to the after-the-fact notice,
+    /// which is asked once, on demand.
+    func reviveExpectation(fallbackTerminal: String) -> String {
+        if let host = hostApplication {
+            // The tty is checked as well as the host: `revive` matches a tab by
+            // tty and gives up immediately without one, so promising the
+            // original tab to a record that has a scriptable host and no
+            // controlling terminal — a session started with `setsid`, or with
+            // its stdio redirected away from the tab it was typed in — is a
+            // promise the revive path cannot keep.
+            if SessionControl.isScriptable(host: host), tty != nil {
+                return "Reopens in its original \(host) tab, or a new window if you've closed it."
+            }
+            if SessionControl.isScriptable(host: host) {
+                return "Reopens in a new \(fallbackTerminal) window — it had no tty to return to."
+            }
+            return "Its tab was in \(host), which can't be scripted from outside — reopens in a new \(fallbackTerminal) window."
+        }
+        // No host was captured: an older record, or a session with no GUI
+        // ancestor at all. Claim only what is actually known.
+        return tty == nil
+            ? "Reopens in a new \(fallbackTerminal) window."
+            : "Reopens in its original tab if it's still open, otherwise a new \(fallbackTerminal) window."
+    }
 }
 
 func shellQuote(_ s: String) -> String {

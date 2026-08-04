@@ -181,7 +181,18 @@ enum SessionControl {
             reclaimedBytes: session.totalFootprint,
             version: session.version,
             entrypoint: session.entrypoint,
-            tty: ProcProbe.tty(session.pid)
+            // Both read while the process is still alive. This runs before the
+            // signal on purpose: once it exits the kernel has no controlling
+            // terminal for it and its parent chain is gone, so a capture done
+            // after the SIGTERM records nothing for either.
+            tty: session.tty ?? ProcProbe.tty(session.pid),
+            hostApplication: session.hostApplication
+                ?? ProcProbe.hostApplication(of: session.pid),
+            // Not from the process at all — from the per-session statusline
+            // file, which is the only place a level set with `/effort` appears.
+            // Still read here rather than at revive time: the file is pruned
+            // when the session stops being live.
+            effort: QuotaReader.sessionUsage(sessionId: session.sessionId)?.effortLevel
         )
         // Persist before signalling: a crash between the two should leave a
         // recoverable record, not an orphaned session we've forgotten. A failed
@@ -354,26 +365,38 @@ enum SessionControl {
 
     // MARK: - Revive
 
-    /// Bring a hibernated session back in a fresh terminal window.
-    ///
-    /// The user never types `--resume` or hunts for a session id: Torpor opens
-    /// the terminal at the original working directory and replays the original
-    /// flags alongside the resume.
     /// How a revive actually landed, so the UI can say what happened rather
     /// than implying the session came back where it left.
     enum ReviveOutcome {
         case originalTab(app: String)
-        case newWindow(app: String)
+        /// A fresh window. `unreachableHost` names the application the session
+        /// actually came from when that application is one Torpor cannot script
+        /// — VS Code, Cursor, Warp, Ghostty. Nil when the old tab was simply
+        /// closed, or when there was no host to return to at all: those are
+        /// different facts and only one of them is a platform limit.
+        case newWindow(app: String, unreachableHost: String?)
     }
 
-    /// Bundle identifiers of terminals that expose a per-tab `tty` in their
-    /// scripting dictionary. VS Code's integrated terminal — where a great many
-    /// Claude Code sessions actually live — has no such API and cannot be
-    /// targeted from outside, so those sessions always get a new window.
-    private static let scriptableTerminals: [(bundleID: String, name: String)] = [
+    /// Terminals that expose a per-tab `tty` in their scripting dictionary.
+    /// This is the whole scriptable set — there is no third entry to add.
+    ///
+    /// VS Code's integrated terminal, where a great many Claude Code sessions
+    /// actually live, has no such API, and macOS blocks the alternative:
+    /// `TIOCSTI` returns EPERM (measured) because a process may not inject
+    /// input into a tty it does not control. Reviving into one of those tabs is
+    /// impossible rather than unimplemented, so the honest move is to say which
+    /// application the session came from and open a new window.
+    static let scriptableTerminals: [(bundleID: String, name: String)] = [
         ("com.apple.Terminal", "Terminal"),
         ("com.googlecode.iterm2", "iTerm"),
     ]
+
+    /// Whether a host application named by `ProcProbe.hostApplication(of:)`
+    /// can be driven back to a specific tab.
+    static func isScriptable(host: String?) -> Bool {
+        guard let host else { return false }
+        return scriptableTerminals.contains { $0.name == host }
+    }
 
     private static func isRunning(_ bundleID: String) -> Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
@@ -441,6 +464,12 @@ enum SessionControl {
         return nil
     }
 
+    /// Bring a hibernated session back — in the tab it died in where that is
+    /// possible, and in a fresh window where it is not.
+    ///
+    /// The user never types `--resume` or hunts for a session id: Torpor opens
+    /// the terminal at the original working directory and replays the original
+    /// flags alongside the resume.
     @discardableResult
     static func revive(_ record: HibernatedSession,
                        terminal: String) throws -> ReviveOutcome {
@@ -448,7 +477,22 @@ enum SessionControl {
 
         // Prefer the tab the session died in. Only its own shell may still be
         // sitting on that tty, so a match is unambiguous.
-        if let tty = record.tty, let app = reviveInOriginalTab(command: command, tty: tty) {
+        //
+        // Skipped outright for a host we know we cannot script. It could not
+        // have matched anyway — no Terminal or iTerm tab holds a VS Code tty —
+        // but attempting it walks every window of both apps over Apple events,
+        // which is what raises the "Torpor wants to control Terminal" consent
+        // dialog. Asking for that permission to run a search whose answer is
+        // already known is not a thing to do to someone.
+        //
+        // A record written before hosts were captured has no `hostApplication`
+        // and still gets the search: nil means "not known", not "not
+        // scriptable", and those records are the ones the tab match was
+        // written for.
+        let hostIsHopeless = record.hostApplication != nil
+            && !isScriptable(host: record.hostApplication)
+        if !hostIsHopeless, let tty = record.tty,
+           let app = reviveInOriginalTab(command: command, tty: tty) {
             return .originalTab(app: app)
         }
         try launch(command: command, terminal: terminal)
@@ -458,7 +502,44 @@ enum SessionControl {
         // the record now would destroy the only copy of the captured argv on a
         // revive that printed "command not found". Engine clears it once a live
         // session with this id appears in the registry.
-        return .newWindow(app: terminal)
+        return .newWindow(app: terminal, unreachableHost: hostIsHopeless
+                          ? record.hostApplication : nil)
+    }
+
+    /// Where the session actually came back, and — when it did not come back
+    /// where it left — why not.
+    ///
+    /// Lives with the outcome rather than in the Engine so that `--revive` on
+    /// the command line reports the same fact the popover does. "The tab is
+    /// gone", "your terminal has no scripting API" and "there was never a tty"
+    /// are three different facts and only one of them is the user's doing.
+    static func notice(for outcome: ReviveOutcome, record: HibernatedSession) -> String {
+        switch outcome {
+        case let .originalTab(app):
+            return "Reopened \(record.name) in its original \(app) tab."
+        case let .newWindow(app, unreachableHost):
+            if let host = unreachableHost {
+                return "Reopened \(record.name) in a new \(app) window — its original tab was in \(host), which can't be scripted. Only Terminal and iTerm can."
+            }
+            let opened = "Opened \(record.name) in a new \(app) window"
+            guard let tty = record.tty else {
+                return "\(opened) — its original terminal had no tty to return to."
+            }
+            guard ProcProbe.ttyIsLive(tty) else {
+                return "\(opened) — its old tab (\(tty)) was closed."
+            }
+            // The tab is open and the host *is* one of the two we can script,
+            // or `unreachableHost` would have been set. So the Apple event was
+            // refused, and the usual reason is that Torpor was never granted
+            // Automation access. "That terminal can't be scripted" would be
+            // false here, and points at the wrong fix.
+            if let host = record.hostApplication {
+                return "\(opened) — its old tab (\(tty)) is open, but macOS wouldn't let Torpor drive \(host). Check Privacy & Security ▸ Automation."
+            }
+            // No host was captured, so the terminal really is unknown and the
+            // tty is the only evidence there is.
+            return "\(opened) — its old tab (\(tty)) is open, but that terminal can't be scripted from outside. Only Terminal and iTerm can."
+        }
     }
 
     /// AppleScript string-literal escaping. Applied *after* shell quoting —

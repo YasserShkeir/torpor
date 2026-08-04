@@ -228,13 +228,21 @@ enum CLI {
             // "1 flags" left the user to discover after the revive that their
             // permission grant was gone.
             let dropped = droppedFlags(seen: seen, replaying: replayable, refusing: refused)
-            let tty = ProcProbe.tty(pid)
+            // Every field hibernate would capture, or the preview describes a
+            // different record than the one --hibernate would write. Omitting
+            // host and effort made this print a resume command without the
+            // --effort the real hibernate appends, and claim a tab was
+            // reachable for a session whose terminal cannot be scripted.
+            let tty = session.tty ?? ProcProbe.tty(pid)
             let record = HibernatedSession(
                 sessionId: session.sessionId, cwd: session.cwd, name: session.name,
                 executable: executable, executablePath: captured.executablePath,
                 arguments: replayable,
                 hibernatedAt: Date(), reclaimedBytes: session.totalFootprint,
-                version: session.version, entrypoint: session.entrypoint, tty: tty)
+                version: session.version, entrypoint: session.entrypoint, tty: tty,
+                hostApplication: session.hostApplication
+                    ?? ProcProbe.hostApplication(of: pid),
+                effort: QuotaReader.sessionUsage(sessionId: session.sessionId)?.effortLevel)
             // One label column, 12 wide: "would free:" used to sit a character
             // right of everything else, which reads as a stray line.
             print("session:    \(session.projectName) (\(session.sessionId))")
@@ -253,8 +261,15 @@ enum CLI {
                 print("refusing:   \(refused.joined(separator: " ")) — carries an inline value Torpor will not store")
                 print("hibernate would refuse this session; nothing would be terminated.")
             }
-            print("terminal:   " + (tty.map { "\($0) — revive returns to this tab if it is still open" }
-                                    ?? "no tty (VS Code-hosted) — revive opens a new window"))
+            // A tty does *not* mean the tab is reachable — every session in VS
+            // Code's integrated terminal has one, and none of them can be
+            // scripted back to. Same sentence the popover puts under the Revive
+            // button, so the two cannot drift.
+            print("terminal:   " + (tty ?? "none")
+                  + (record.hostApplication.map { " in \($0)" } ?? ""))
+            print("on revive:  "
+                  + record.reviveExpectation(
+                        fallbackTerminal: Preferences.load().launchTerminal))
             print("revive runs:")
             print("  cd \(shellQuote(record.cwd)) && \(record.resumeCommand)")
 
@@ -293,9 +308,12 @@ enum CLI {
             let store = HibernationStore()
             let record = hibernated(matching: id, in: store, flag: "--revive")
             do {
-                try SessionControl.revive(record,
-                                          terminal: Preferences.load().launchTerminal)
-                print("Revived \(record.name).")
+                let outcome = try SessionControl.revive(
+                    record, terminal: Preferences.load().launchTerminal)
+                // The same sentence the popover shows. "Revived <name>." was
+                // silent about the session coming back somewhere other than
+                // where it left, which is the one thing worth saying here.
+                print(SessionControl.notice(for: outcome, record: record))
             } catch { fail(error.localizedDescription) }
 
         case "--resume-command":

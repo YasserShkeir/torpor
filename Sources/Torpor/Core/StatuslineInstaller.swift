@@ -12,8 +12,10 @@ import Foundation
 ///     rate_limits.seven_day.resets_at
 ///
 /// These are the same server-computed numbers `/usage` renders. The payload
-/// also carries `cost.total_cost_usd`, `context_window` and `model`, which
-/// Torpor reads too.
+/// also carries `cost.total_cost_usd`, `context_window`, `model` and
+/// `effort.level`, which Torpor reads too. `effort` is the only one of them
+/// that cannot be recovered any other way: `/effort` sets it mid-session, so it
+/// never appears in the process's argv for hibernate to capture.
 ///
 /// The shim extracts *only* those fields to a snapshot file and then delegates
 /// to whatever statusline the user already had, so installing Torpor never
@@ -286,7 +288,11 @@ enum StatuslineInstaller {
 
     /// Bumped whenever the shim's *output* changes, so a shim written by an
     /// earlier release can be recognised on disk.
-    private static let shimVersion = 2
+    /// 3 adds `effort.level`, which hibernate replays as `--effort` — a level
+    /// set with the `/effort` slash command is never in argv, so the payload is
+    /// the only place it exists. Without the bump every existing install keeps
+    /// a shim that has never written the field.
+    private static let shimVersion = 3
 
     private static var installedShimIsCurrent: Bool {
         guard let text = try? String(contentsOf: Paths.statuslineShim, encoding: .utf8)
@@ -430,6 +436,10 @@ enum StatuslineInstaller {
         part = join(pair("id", quote(text(src, "id"))),
                     pair("display_name", quote(text(src, "display_name"))))
         if (part != "") out = join(out, pair("model", "{" part "}"))
+
+        src = slice(doc, "effort")
+        part = pair("level", quote(text(src, "level")))
+        if (part != "") out = join(out, pair("effort", "{" part "}"))
 
         printf "%s {%s}\n", (sid == "" ? "-" : sid), out
     }

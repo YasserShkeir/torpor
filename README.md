@@ -46,8 +46,13 @@ Then two things you can do to one:
 and it carries on.
 
 **Hibernate** ends an idle session and gives back all its memory. One click
-brings it back in the same terminal tab, the same directory, with the flags it
-was started with. You never type `--resume`.
+brings it back in the same directory, with the flags it was started with and at
+the effort level it was running at. You never type `--resume`.
+
+If the session was in Terminal or iTerm it comes back in the tab it left, still
+in your old window layout. Those two are the only terminals macOS lets an app
+script by tab — a session in VS Code, Cursor, Warp or Ghostty gets a new window
+instead, and Torpor says so on the row before you click rather than after.
 
 Your 5-hour or weekly usage sits in the menu bar — you pick which — with a white
 line marking how far through that window you are. Fill behind the line means

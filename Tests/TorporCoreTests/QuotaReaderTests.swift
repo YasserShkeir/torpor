@@ -302,4 +302,59 @@ import Testing
         _ = QuotaReader.sessionUsage(live: ["dddddddd-0000-0000-0000-000000000000"])
         #expect(!FileManager.default.fileExists(atPath: file.path))
     }
+
+    /// `effort.level` is per session for a sharper reason than cost is: the
+    /// `/effort` command changes it for one conversation, so reading it from
+    /// the shared snapshot would report whichever session drew its statusline
+    /// last — and hibernate would then revive a session at someone else's
+    /// setting.
+    @Test func effortIsReadFromTheSessionsOwnFile() throws {
+        reset()
+        let mine = "eeeeeeee-0000-0000-0000-000000000000"
+        let theirs = "ffffffff-0000-0000-0000-000000000000"
+        var high = payload(sessionId: mine)
+        high["effort"] = ["level": "xhigh"]
+        var low = payload(sessionId: theirs)
+        low["effort"] = ["level": "low"]
+        try writeSessionFile(high, for: mine)
+        try writeSessionFile(low, for: theirs)
+
+        let usage = QuotaReader.sessionUsage(live: [mine, theirs])
+        #expect(usage[mine]?.effortLevel == "xhigh")
+        #expect(usage[theirs]?.effortLevel == "low")
+    }
+
+    /// The single-session read hibernate uses. It must answer for one session
+    /// without pruning — capture happens while other sessions are still live,
+    /// and deleting their cost files as a side effect of asking about this one
+    /// would throw away figures no later render can rebuild.
+    @Test func theSingleSessionReadDeletesNothing() throws {
+        reset()
+        let mine = "aaaaaaaa-1111-0000-0000-000000000000"
+        let other = "bbbbbbbb-1111-0000-0000-000000000000"
+        var object = payload(sessionId: mine)
+        object["effort"] = ["level": "max"]
+        try writeSessionFile(object, for: mine)
+        try writeSessionFile(payload(sessionId: other), for: other)
+
+        #expect(QuotaReader.sessionUsage(sessionId: mine)?.effortLevel == "max")
+        #expect(QuotaReader.sessionUsage(sessionId: other)?.effortLevel == nil,
+                "absent effort is nil, not a guess")
+        for id in [mine, other] {
+            #expect(FileManager.default.fileExists(
+                atPath: QuotaReader.sessionsDirectory
+                    .appendingPathComponent("\(id).json").path))
+        }
+        // A session that never rendered has no file, which is not an error.
+        #expect(QuotaReader.sessionUsage(sessionId: "no-such-session") == nil)
+    }
+
+    /// The id is built into a path, and it comes from the registry — an
+    /// undocumented file where every field is optional and none is validated.
+    /// `sessionUsage(live:)` reads its ids back off filenames and never had
+    /// this exposure; the single-session read does.
+    @Test(arguments: ["../../../../etc/passwd", "a/b", "", "..", "a b"])
+    func aSessionIdThatIsNotOneReadsNothing(_ id: String) {
+        #expect(QuotaReader.sessionUsage(sessionId: id) == nil)
+    }
 }

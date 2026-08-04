@@ -75,9 +75,46 @@ on one key and only the largest survives.
 
 Killing `claude` leaves its parent shell alive, so the tab is still sitting at a
 prompt. Torpor records the controlling tty and matches it against open Terminal
-and iTerm tabs. VS Code's built-in terminal has no scripting API, so those get a
-new window instead, and a VS Code-hosted binary is refused rather than relaunched
-somewhere it won't work.
+and iTerm tabs.
+
+The tty does not come from `~/.claude/sessions/<pid>.json`. That file holds cwd,
+entrypoint, kind, name, nameSource, peerProtocol, pid, procStart, sessionId,
+startedAt, status, statusUpdatedAt, updatedAt and version — there is no `tty`
+field and never was. It is read off the live process instead, at hibernate time,
+*before* the signal: once the process exits the kernel has no controlling
+terminal for it.
+
+A tty on its own doesn't say whether the tab can be reached. Every session on
+the development machine has one, and all of them are VS Code's. So the parent
+chain is walked as well — `claude → zsh → Code Helper → Code` — skipping helper
+processes, which Launch Services either doesn't know or reports as
+`.prohibited`, until a real application turns up. Terminal and iTerm are the
+whole scriptable set; VS Code, Cursor, Warp and Ghostty are not, and `TIOCSTI`
+is not a way round it (measured: EPERM, a process may not inject input into a
+tty it doesn't control). Those sessions get a new window and are told which
+application their tab was in, before the button is pressed as well as after.
+
+A VS Code-*hosted* binary is a separate matter and is refused rather than
+relaunched somewhere it won't work. A CLI session that merely happens to be
+running inside VS Code's integrated terminal is an ordinary `cli` entrypoint and
+revives normally.
+
+## Effort
+
+`--effort <low|medium|high|xhigh|max>` is a real flag and is in the replay
+allowlist, but the level is usually set with the `/effort` command mid-session,
+so it is never in argv and there is nothing to capture from the process. The
+statusline payload carries it as `effort.level`, which is the only source there
+is. It's per-session, like `cost` — `/effort` changes one conversation — so it
+comes from the session's own snapshot file, and hibernate reads it at capture
+time because that file is pruned once the session stops being live.
+
+Only the five documented levels are replayed — not because the CLI rejects the
+others (measured: `claude --effort ultra` warns and falls back to the default,
+exit 0) but because the level is the one part of the resume command that comes
+from a file Torpor doesn't own, and it lands on a shell line. The allowlist is
+what keeps it a bare word. A level already in argv wins, and is not emitted
+twice.
 
 ## Where the usage numbers come from
 

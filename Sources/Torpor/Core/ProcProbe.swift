@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 
@@ -97,6 +98,74 @@ enum ProcProbe {
         let device = dev_t(bitPattern: info.e_tdev)
         guard let name = devname(device, S_IFCHR) else { return nil }
         return "/dev/" + String(cString: name)
+    }
+
+    /// Display names for the terminals worth naming, keyed by bundle id.
+    ///
+    /// `localizedName` alone is not good enough for the case this exists to
+    /// describe: VS Code's is the bare "Code", which reads as a compiler in a
+    /// sentence about where a session used to live. Anything absent from this
+    /// table still gets named, just with whatever the app calls itself.
+    private static let hostNames: [String: String] = [
+        "com.apple.Terminal": "Terminal",
+        // Matches the AppleScript target in SessionControl.scriptableTerminals.
+        // The app calls itself "iTerm2"; `tell application "iTerm"` is what
+        // actually drives it, and the two must agree or a scriptable host
+        // would be reported as unreachable.
+        "com.googlecode.iterm2": "iTerm",
+        "com.microsoft.VSCode": "VS Code",
+        "com.microsoft.VSCodeInsiders": "VS Code Insiders",
+        "com.visualstudio.code.oss": "VS Code OSS",
+        "com.todesktop.230313mzl4w4u92": "Cursor",
+        "com.exafunction.windsurf": "Windsurf",
+        "dev.warp.Warp-Stable": "Warp",
+        "com.mitchellh.ghostty": "Ghostty",
+        "net.kovidgoyal.kitty": "kitty",
+        "co.zeit.hyper": "Hyper",
+        "org.alacritty": "Alacritty",
+        "com.apple.dt.Xcode": "Xcode",
+    ]
+
+    /// The application whose terminal a process is running in, found by walking
+    /// the parent chain until a real GUI app turns up.
+    ///
+    /// A tty alone does not answer this and cannot: every one of the machine's
+    /// nine live sessions has a controlling terminal, and all nine of them are
+    /// VS Code's, which has no scripting API for its integrated terminal.
+    /// Revive needs to know that *before* it decides where to reopen, and the
+    /// user needs to be told it rather than handed a new window as though
+    /// nothing was lost.
+    ///
+    /// The walk skips helper processes on purpose. A VS Code session's chain is
+    /// `claude -> zsh -> Code Helper -> Code`, and only the last of those is a
+    /// registered application: Launch Services returns nil for the helper, and
+    /// an Electron helper that *is* registered has called `TransformProcessType`
+    /// on itself and reports `.prohibited`. Both are stepped over, so the answer
+    /// is the app the user would name.
+    ///
+    /// Returns nil when there is no GUI ancestor at all — a session under tmux,
+    /// a launchd agent, or an ssh login. That is a real answer and is reported
+    /// as one, not folded into "some terminal we cannot script".
+    static func hostApplication(of pid: Int32) -> String? {
+        var current = pid
+        // Bounded rather than `while`: PID reuse can leave a cycle in the
+        // parent chain, which `descendants(of:index:)` guards against for the
+        // same reason.
+        for _ in 0..<32 {
+            guard let info = bsdInfo(current) else { return nil }
+            let parent = Int32(bitPattern: info.pbi_ppid)
+            // 1 is launchd: past it there is nothing left to attribute to.
+            guard parent > 1 else { return nil }
+            if let app = NSRunningApplication(processIdentifier: parent),
+               app.activationPolicy != .prohibited {
+                if let bundleID = app.bundleIdentifier, let name = hostNames[bundleID] {
+                    return name
+                }
+                return app.localizedName
+            }
+            current = parent
+        }
+        return nil
     }
 
     // MARK: - Argument vector capture

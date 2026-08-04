@@ -721,7 +721,7 @@ struct SessionsTab: View {
                         Text("iTerm").tag("iTerm")
                     }
                     .pickerStyle(.segmented)
-                    Text("Revive returns to the tab the session was ended in whenever that tab still exists. This is the fallback when it doesn't. macOS asks for Automation permission the first time.")
+                    Text("Terminal and iTerm are the only terminals macOS lets Torpor script by tab, so only sessions from those come back where they left — and only while that tab is still open. A session from VS Code, Cursor, Warp or Ghostty gets a new window here instead. macOS asks for Automation permission the first time.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

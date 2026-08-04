@@ -607,14 +607,8 @@ final class Engine: ObservableObject {
         do {
             let outcome = try SessionControl.revive(
                 record, terminal: preferences.launchTerminal)
-            switch outcome {
-            case let .originalTab(app):
-                lastError = nil
-                lastNotice = "Reopened \(record.name) in its original \(app) tab."
-            case let .newWindow(app):
-                lastError = nil
-                lastNotice = Self.newWindowReason(for: record, app: app)
-            }
+            lastError = nil
+            lastNotice = SessionControl.notice(for: outcome, record: record)
         } catch {
             lastError = error.localizedDescription
         }
@@ -768,20 +762,6 @@ final class Engine: ObservableObject {
             accountStatus.errorMode = preferences.authMode
         }
         nextFetchAllowed = await api.nextFetchDate
-    }
-
-    /// Says *why* the session came back in a new window rather than its old
-    /// tab. "The tab is gone" and "your terminal has no scripting API" are
-    /// different facts and only one of them is the user's doing.
-    private static func newWindowReason(for record: HibernatedSession, app: String) -> String {
-        let opened = "Opened \(record.name) in a new \(app) window"
-        guard let tty = record.tty else {
-            return "\(opened) — its original terminal had no tty to return to."
-        }
-        if ProcProbe.ttyIsLive(tty) {
-            return "\(opened) — its old tab (\(tty)) is open, but that terminal can't be scripted from outside. Only Terminal and iTerm can."
-        }
-        return "\(opened) — its old tab (\(tty)) was closed."
     }
 
     func disarmConfirmations() {

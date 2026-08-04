@@ -319,6 +319,20 @@ struct PopoverView: View {
         }
     }
 
+    /// What was freed, how long ago, and the effort level revive will restore.
+    ///
+    /// The level is shown because it is the part of the session's configuration
+    /// the user cannot see anywhere else: `/effort` never reaches argv, so
+    /// nothing on the row would otherwise say it survived the round trip. Only
+    /// a level revive will actually pass is shown — advertising one the CLI
+    /// would reject is worse than saying nothing.
+    private static func hibernatedDetail(_ record: HibernatedSession) -> String {
+        var parts = ["\(Fmt.bytes(record.reclaimedBytes)) freed",
+                     "\(Fmt.duration(Date().timeIntervalSince(record.hibernatedAt))) ago"]
+        if let effort = record.replayableEffort { parts.append("\(effort) effort") }
+        return parts.joined(separator: " · ")
+    }
+
     private var hibernatedSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader("Hibernated")
@@ -328,7 +342,7 @@ struct PopoverView: View {
                         Image(systemName: "moon.zzz.fill").foregroundStyle(.indigo)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(record.name).font(.callout)
-                            Text("\(Fmt.bytes(record.reclaimedBytes)) freed · \(Fmt.duration(Date().timeIntervalSince(record.hibernatedAt))) ago")
+                            Text(Self.hibernatedDetail(record))
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -362,6 +376,16 @@ struct PopoverView: View {
 
                     if confirmingForget == record.sessionId {
                         Text("Loses the captured flags — --mcp-config, --add-dir. The conversation stays on disk.")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        // Said before the click, not after it. Reviving
+                        // activates the terminal and closes this popover, so an
+                        // after-the-fact notice about the original tab being
+                        // unreachable lands on a panel nobody is looking at —
+                        // and it changes what the button is going to do.
+                        Text(record.reviveExpectation(
+                            fallbackTerminal: engine.preferences.launchTerminal))
                             .font(.system(size: 10)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
