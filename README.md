@@ -51,8 +51,11 @@ the effort level it was running at. You never type `--resume`.
 
 If the session was in Terminal or iTerm it comes back in the tab it left, still
 in your old window layout. Those two are the only terminals macOS lets an app
-script by tab — a session in VS Code, Cursor, Warp or Ghostty gets a new window
-instead, and Torpor says so on the row before you click rather than after.
+script by tab. A session in VS Code, Cursor, Warp or Ghostty can't be typed into
+by anything — so reviving one copies its command and brings that app forward for
+you to paste, rather than opening a window you didn't ask for. The row says
+which you'll get before you click, and a new Terminal window is still one menu
+item away if that's what you wanted.
 
 Your 5-hour or weekly usage sits in the menu bar — you pick which — with a white
 line marking how far through that window you are. Fill behind the line means

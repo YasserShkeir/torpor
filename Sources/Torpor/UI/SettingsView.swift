@@ -721,7 +721,7 @@ struct SessionsTab: View {
                         Text("iTerm").tag("iTerm")
                     }
                     .pickerStyle(.segmented)
-                    Text("Terminal and iTerm are the only terminals macOS lets Torpor script by tab, so only sessions from those come back where they left — and only while that tab is still open. A session from VS Code, Cursor, Warp or Ghostty gets a new window here instead. macOS asks for Automation permission the first time.")
+                    Text("Terminal and iTerm are the only terminals macOS lets Torpor script by tab, so only sessions from those come back where they left — and only while that tab is still open. macOS asks for Automation permission the first time. A session from VS Code, Cursor, Warp or Ghostty can't be typed into at all: reviving one copies its command and brings that app forward for you to paste, and this picker doesn't apply to it.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

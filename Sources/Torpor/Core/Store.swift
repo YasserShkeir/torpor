@@ -167,6 +167,16 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
         return parts.joined(separator: " ")
     }
 
+    /// The whole line, `cd` included: one string a user can paste into any
+    /// shell and press Return.
+    ///
+    /// Deliberately without the `clear` that `revive` inserts. That `clear`
+    /// exists to hide the dead session's scrollback when we reopen *in its own
+    /// tab*; a line the user pastes into a terminal of their choosing has no
+    /// such history to hide, and wiping the scrollback of a tab they picked —
+    /// possibly the one they were reading — is not ours to do.
+    var resumeCommandLine: String { "cd \(shellQuote(cwd)) && \(resumeCommand)" }
+
     /// Flags worth carrying across a hibernate/revive cycle, and the flags we
     /// could not carry faithfully.
     ///
@@ -270,27 +280,40 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
     /// tick, and `ProcProbe.ttyIsLive` walks the whole process table — so
     /// whether the tab is still *open* is left to the after-the-fact notice,
     /// which is asked once, on demand.
+    /// Asks `SessionControl.route(for:)` rather than re-deriving the decision.
+    /// The sentence and the button have to be the same choice, and they were
+    /// two copies of one condition before — which is how a sentence starts
+    /// promising a tab the code no longer tries for.
     func reviveExpectation(fallbackTerminal: String) -> String {
-        if let host = hostApplication {
-            // The tty is checked as well as the host: `revive` matches a tab by
-            // tty and gives up immediately without one, so promising the
-            // original tab to a record that has a scriptable host and no
-            // controlling terminal — a session started with `setsid`, or with
-            // its stdio redirected away from the tab it was typed in — is a
-            // promise the revive path cannot keep.
-            if SessionControl.isScriptable(host: host), tty != nil {
+        switch SessionControl.route(for: self) {
+        case .originalTab:
+            if let host = hostApplication {
                 return "Reopens in its original \(host) tab, or a new window if you've closed it."
             }
-            if SessionControl.isScriptable(host: host) {
-                return "Reopens in a new \(fallbackTerminal) window — it had no tty to return to."
+            // No host was captured: an older record, or a session with no GUI
+            // ancestor at all. Claim only what is actually known.
+            return "Reopens in its original tab if it's still open, otherwise a new \(fallbackTerminal) window."
+        case .handoff:
+            guard let host = hostApplication else {
+                return "Copies the command — no terminal was recorded for this session, so paste it wherever you want it back."
             }
-            return "Its tab was in \(host), which can't be scripted from outside — reopens in a new \(fallbackTerminal) window."
+            // Reads as a decision, not a failure. Torpor knows exactly which
+            // app the session lived in and knows it cannot type into it, so it
+            // hands the line over rather than opening a window you did not ask
+            // for. Kept to two lines at the popover's width: this renders under
+            // every hibernated row.
+            //
+            // Says where to paste, not that the app will be raised. Revive does
+            // try to raise it, but only succeeds when it is running and Torpor
+            // is itself frontmost — and checking either would mean an
+            // NSWorkspace lookup per row per poll, which is what this property
+            // exists to avoid. The notice afterwards reports what actually
+            // happened; this one promises only what is certain.
+            guard tty != nil else {
+                return "Copies the command to paste back into \(host) — no tty was recorded, so put it in whichever tab you want."
+            }
+            return "Copies the command to paste back into \(host) — Torpor can't type into its tabs."
         }
-        // No host was captured: an older record, or a session with no GUI
-        // ancestor at all. Claim only what is actually known.
-        return tty == nil
-            ? "Reopens in a new \(fallbackTerminal) window."
-            : "Reopens in its original tab if it's still open, otherwise a new \(fallbackTerminal) window."
     }
 }
 

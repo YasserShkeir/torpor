@@ -604,15 +604,38 @@ final class Engine: ObservableObject {
     }
 
     func revive(_ record: HibernatedSession) {
+        revive(record, destination: .automatic)
+    }
+
+    /// A new terminal window, because that is what was asked for — offered
+    /// beside Revive for the sessions whose own tab cannot be reached, where
+    /// the automatic answer is a handoff rather than a window.
+    func reviveInNewWindow(_ record: HibernatedSession) {
+        revive(record, destination: .newWindow)
+    }
+
+    private func revive(_ record: HibernatedSession,
+                        destination: SessionControl.ReviveDestination) {
         do {
             let outcome = try SessionControl.revive(
-                record, terminal: preferences.launchTerminal)
+                record, terminal: preferences.launchTerminal, destination: destination)
             lastError = nil
             lastNotice = SessionControl.notice(for: outcome, record: record)
         } catch {
             lastError = error.localizedDescription
         }
         refresh()
+    }
+
+    /// The command revive would run, on the clipboard, without reviving.
+    ///
+    /// Worth having even for a session whose tab *is* reachable: it is how
+    /// someone checks what Torpor is about to run before trusting it with a
+    /// session. The CLI has had this as `--resume-command` all along.
+    func copyResumeCommand(_ record: HibernatedSession) {
+        SessionControl.copyCommand(for: record)
+        lastError = nil
+        lastNotice = "Copied the command for \(record.name) to the clipboard."
     }
 
     func forget(_ record: HibernatedSession) {

@@ -27,7 +27,7 @@ notification permission, make no network call, and cannot trigger auto-hibernate
 | `--hibernated` | Sessions Torpor has hibernated and can bring back |
 | `--status` | Statusline install state, the 5-hour and weekly percentages, per-model weekly rows if your account has them, and how old the reading is. No percentages until the shim is installed and Claude Code has rendered a prompt, and none ever on an API-key, Bedrock or Vertex account — Claude Code sends those no plan limits |
 | `--preview <pid>` | What hibernating that session would capture and replay. Reads argv, changes nothing |
-| `--resume-command <session-id>` | The command `--revive` would run, minus the screen clear. Prints, runs nothing |
+| `--resume-command <session-id>` | The exact command `--revive` runs, and the one it copies. Prints, runs nothing |
 | `--version`, `--help` | What they say |
 
 An unrecognised flag prints usage to stderr and exits 2. So does a bare word —
@@ -44,7 +44,7 @@ These change something. Each one is also reachable from the popover.
 | `--freeze <pid>` | SIGSTOP the session and its whole MCP subtree, deepest first. CPU to zero, memory unchanged |
 | `--thaw <pid>` | SIGCONT the same subtree |
 | `--hibernate <pid>` | Read argv, write the recovery record, then terminate the session and its subtree |
-| `--revive <session-id>` | Reopen it in a terminal, in its original directory, with its replayable flags |
+| `--revive <session-id>` | Reopen it in its original tab, in its original directory, with its replayable flags. If its terminal can't be scripted — anything but Terminal and iTerm — copies the command to the clipboard and brings that app forward instead |
 
 `--hibernate` writes the recovery record **before** it signals anything, so a
 crash halfway through cannot leave a terminated session with no way back.
@@ -78,8 +78,10 @@ $ Torpor --resume-command 7b3e4cb7-...
 cd /Users/you/Documents/GitHub/atlagene && /Users/you/.local/bin/claude --resume 7b3e4cb7-... --mcp-config ./mcp.json --model opus
 ```
 
-A revive runs the same thing with a `clear` between the `cd` and the `claude`,
-so the new terminal starts empty — that is the one difference. The working
+A revive into an existing tab inserts a `clear` between the `cd` and the
+`claude`, to hide the dead session's own scrollback. The copied command has no
+`clear`: wiping the scrollback of a terminal you chose to paste into is not
+Torpor's to do. The working
 directory is quoted only when it holds something a shell would otherwise
 interpret. The binary is the absolute path the session was launched from, while
 that path still exists; a bare `claude` otherwise, and always for a session

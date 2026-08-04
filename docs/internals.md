@@ -91,8 +91,19 @@ processes, which Launch Services either doesn't know or reports as
 `.prohibited`, until a real application turns up. Terminal and iTerm are the
 whole scriptable set; VS Code, Cursor, Warp and Ghostty are not, and `TIOCSTI`
 is not a way round it (measured: EPERM, a process may not inject input into a
-tty it doesn't control). Those sessions get a new window and are told which
-application their tab was in, before the button is pressed as well as after.
+tty it doesn't control). Nor is the `code` CLI, whose whole option list is diff,
+merge, add, remove, goto, new-window, reuse-window, agents, wait, locale,
+user-data-dir and profile — it opens files and folders and nothing else. Nor
+`vscode://`, which routes to extensions only. Synthetic keystrokes through
+System Events do work, and are declined: Accessibility is a far broader grant
+than Automation, anything can steal focus between `activate` and `keystroke`,
+and it would reach whichever terminal the editor focuses rather than the tab the
+session died in.
+
+So those sessions get the command on the clipboard and their editor brought
+forward, which is told to the user before the button is pressed as well as
+after. A new window remains available from the row's menu for anyone who wants
+one.
 
 A VS Code-*hosted* binary is a separate matter and is refused rather than
 relaunched somewhere it won't work. A CLI session that merely happens to be

@@ -346,9 +346,35 @@ struct PopoverView: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Revive") { engine.revive(record) }
-                            .controlSize(.small)
-                            .help(record.resumeCommand)
+                        // One button with a menu on it, rather than three
+                        // buttons. This row is already carrying a name, a
+                        // detail line, Revive and Forget inside a popover
+                        // narrow enough that the detail line wraps; a third and
+                        // fourth control would push Forget off the end or
+                        // shrink every label to an icon nobody can identify.
+                        // The split button keeps Revive a single click — it is
+                        // what the row is for — and puts the two answers that
+                        // are occasionally right, but never right by default,
+                        // one click deeper where they are still labelled in
+                        // words. The sentence below already says which of the
+                        // two the plain click is going to do.
+                        Menu {
+                            Button("Open in a New \(engine.preferences.launchTerminal) Window") {
+                                engine.reviveInNewWindow(record)
+                            }
+                            .help("Runs the command in a brand new window instead of returning it to where it was.")
+                            Button("Copy Command") { engine.copyResumeCommand(record) }
+                                .help("Puts the exact command Revive would run on the clipboard, and runs nothing.")
+                        } label: {
+                            Text("Revive")
+                        } primaryAction: {
+                            engine.revive(record)
+                        }
+                        .menuStyle(.button)
+                        .controlSize(.small)
+                        .fixedSize()
+                        .accessibilityLabel("Revive \(record.name)")
+                        .help(record.resumeCommandLine)
 
                         if confirmingForget == record.sessionId {
                             Button("Forget") {
@@ -447,7 +473,7 @@ struct FirstRunView: View {
                 verb("pause.circle.fill", .cyan, "Freeze",
                      "Pauses a session: no CPU, memory unchanged. Thaw puts it back.")
                 verb("moon.zzz.fill", .orange, "Hibernate",
-                     "Ends a session and gives back its memory. Revive reopens it where it was.")
+                     "Ends a session and gives back its memory. Revive brings it back — in its old tab from Terminal or iTerm, otherwise as a command to paste.")
             }
 
             Divider()
@@ -868,10 +894,21 @@ struct SessionRow: View {
 
     /// Leads with termination. The previous copy ("frees N and reopens on
     /// demand") described suspend-to-disk, which is not what happens.
+    ///
+    /// It also promised "reopens it where it was" to every session, which is
+    /// only true of Terminal and iTerm. This is the sentence someone reads
+    /// while deciding whether to end a session, so it is the worst place in the
+    /// app to be optimistic — the session's host is known here, so say which
+    /// one they are about to get.
     private var hibernateExplanation: String {
         switch session.declaredStatus {
         case "idle":
-            return "Hibernate ends this session and frees \(Fmt.bytes(session.totalFootprint)). One click reopens it where it was."
+            let freed = Fmt.bytes(session.totalFootprint)
+            guard SessionControl.isScriptable(host: session.hostApplication) else {
+                let host = session.hostApplication.map { " in \($0)" } ?? ""
+                return "Hibernate ends this session and frees \(freed). Reviving copies the command for you to paste back\(host) — Torpor can only reopen a tab in Terminal or iTerm."
+            }
+            return "Hibernate ends this session and frees \(freed). One click reopens it in the tab it left, while that tab is still open."
         case "busy":
             return "Working. Freeze pauses it; hibernate waits until it's idle."
         default:

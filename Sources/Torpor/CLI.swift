@@ -31,7 +31,7 @@ enum CLI {
       Torpor --thaw <pid>             SIGCONT it again
       Torpor --hibernate <pid>        Capture argv, terminate, free its memory
       Torpor --preview <pid>          Show what --hibernate would capture, change nothing
-      Torpor --revive <session-id>    Reopen it in a terminal, flags replayed
+      Torpor --revive <session-id>    Reopen it, or copy its command if its app can't be typed into
       Torpor --resume-command <id>    Print what --revive would run
       Torpor --emit-shim <path>       Write the statusline shim for inspection
       Torpor --install-statusline     Install the shim into ~/.claude/settings.json
@@ -271,7 +271,7 @@ enum CLI {
                   + record.reviveExpectation(
                         fallbackTerminal: Preferences.load().launchTerminal))
             print("revive runs:")
-            print("  cd \(shellQuote(record.cwd)) && \(record.resumeCommand)")
+            print("  \(record.resumeCommandLine)")
 
         case "--hibernate":
             guard let raw = arguments.dropFirst(2).first, let pid = Int32(raw) else {
@@ -323,7 +323,9 @@ enum CLI {
             }
             let record = hibernated(matching: id, in: HibernationStore(),
                                     flag: "--resume-command")
-            print("cd \(shellQuote(record.cwd)) && \(record.resumeCommand)")
+            // The same string the popover's Copy Command puts on the clipboard
+            // and the same one a handoff hands over, so the three cannot drift.
+            print(record.resumeCommandLine)
 
         case "--render-live":
             // Renders the exact item the menu bar is drawing right now, at 8x,

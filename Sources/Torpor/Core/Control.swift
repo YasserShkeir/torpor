@@ -374,18 +374,70 @@ enum SessionControl {
         /// — VS Code, Cursor, Warp, Ghostty. Nil when the old tab was simply
         /// closed, or when there was no host to return to at all: those are
         /// different facts and only one of them is a platform limit.
-        case newWindow(app: String, unreachableHost: String?)
+        /// `requested` is whether the user asked for a window outright, from
+        /// the row's menu. Nothing was attempted and nothing failed, so the
+        /// notice must not diagnose: the fallback path explains why the tab was
+        /// missed, and running that explanation here accused macOS of refusing
+        /// an Apple event that was never sent.
+        case newWindow(app: String, unreachableHost: String?, requested: Bool = false)
+        /// Nothing was launched. The command is on the clipboard and `host`,
+        /// when known, names the application it belongs in.
+        ///
+        /// `broughtForward` is whether that application was actually put in
+        /// front of the user — false when it is not running, and false from
+        /// `--revive` on the command line, which is not an active app and so
+        /// cannot raise one. Those two are not told apart because they do not
+        /// differ in what the user should do next: go to the app and paste.
+        /// (The tab-closed and Automation-denied cases *are* told apart, up in
+        /// `newWindow`, because those point at different fixes.)
+        case handedOff(host: String?, broughtForward: Bool)
+    }
+
+    /// Where the user asked a session to come back.
+    enum ReviveDestination {
+        /// Whatever this record actually supports: its own tab, or a handoff.
+        case automatic
+        /// A new window, because that is what was asked for — even for a
+        /// session whose own tab could have been reached.
+        case newWindow
+    }
+
+    /// What an automatic revive will do with a record, decided from the record
+    /// alone: no process table walk, no Apple event, nothing that can block.
+    ///
+    /// Pure so the sentence under the Revive button can ask the same question
+    /// the button answers. It renders per row on every poll tick.
+    enum ReviveRoute {
+        /// Drive the recorded tty, falling back to a new window if that tab has
+        /// since been closed.
+        case originalTab
+        /// No tab Torpor can reach. Put the command on the clipboard and bring
+        /// the host forward instead of opening a window nobody asked for.
+        case handoff
+    }
+
+    static func route(for record: HibernatedSession) -> ReviveRoute {
+        // `revive` matches a tab by tty and gives up at once without one, so no
+        // tty is a handoff whatever the host is — a session started under
+        // `setsid`, or with its stdio redirected away from the tab it was typed
+        // in, has nothing to go back to.
+        guard record.tty != nil else { return .handoff }
+        // A record written before hosts were captured has no `hostApplication`
+        // and still gets the tab search: nil means "not known", not "not
+        // scriptable", and those records are the ones the tab match was written
+        // for.
+        if let host = record.hostApplication, !isScriptable(host: host) { return .handoff }
+        return .originalTab
     }
 
     /// Terminals that expose a per-tab `tty` in their scripting dictionary.
     /// This is the whole scriptable set — there is no third entry to add.
     ///
     /// VS Code's integrated terminal, where a great many Claude Code sessions
-    /// actually live, has no such API, and macOS blocks the alternative:
-    /// `TIOCSTI` returns EPERM (measured) because a process may not inject
-    /// input into a tty it does not control. Reviving into one of those tabs is
-    /// impossible rather than unimplemented, so the honest move is to say which
-    /// application the session came from and open a new window.
+    /// actually live, has no such API, and every route around that is closed —
+    /// see `isScriptable` for the ones that were tried. Reviving into one of
+    /// those tabs is impossible rather than unimplemented, so the honest move
+    /// is to hand the user the command and name the app it belongs in.
     static let scriptableTerminals: [(bundleID: String, name: String)] = [
         ("com.apple.Terminal", "Terminal"),
         ("com.googlecode.iterm2", "iTerm"),
@@ -393,6 +445,23 @@ enum SessionControl {
 
     /// Whether a host application named by `ProcProbe.hostApplication(of:)`
     /// can be driven back to a specific tab.
+    ///
+    /// The whole search for a third answer, so nobody has to run it twice:
+    /// `TIOCSTI` is EPERM on macOS (measured against a live Terminal tab — a
+    /// process may not inject input into a tty it does not control); the `code`
+    /// CLI has no command-execution flag at all (its options open files and
+    /// folders, nothing more); and `vscode://` routes to extensions by design,
+    /// with no built-in command runner.
+    ///
+    /// Synthetic keystrokes through System Events *do* work, and are declined
+    /// anyway. Accessibility is a far broader grant than Automation — it
+    /// permits driving the entire machine, which a session manager has no
+    /// business holding. Focus can change between `activate` and `keystroke`,
+    /// so the command and its Return land in whatever has focus by then: a
+    /// chat, an editor, a terminal already running something. And it would
+    /// reach whichever terminal VS Code happens to focus, not the tab the
+    /// session actually died in — so it does not even deliver the thing it
+    /// costs all that for. False here means the clipboard, deliberately.
     static func isScriptable(host: String?) -> Bool {
         guard let host else { return false }
         return scriptableTerminals.contains { $0.name == host }
@@ -464,36 +533,88 @@ enum SessionControl {
         return nil
     }
 
+    /// Put the command a revive would run on the general pasteboard.
+    ///
+    /// The line without `clear`: see `resumeCommandLine`. Separate from the
+    /// handoff so the row's plain Copy button and the handoff cannot put
+    /// different strings on the clipboard for the same record.
+    @discardableResult
+    static func copyCommand(for record: HibernatedSession) -> String {
+        let line = record.resumeCommandLine
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(line, forType: .string)
+        return line
+    }
+
+    /// Hand the command over instead of guessing where to run it.
+    ///
+    /// Deliberately does *not* also open a new window. Doing both leaves the
+    /// user with a window they did not ask for and a clipboard they have to
+    /// notice; one of those has to be the answer, and for a session that lived
+    /// somewhere Torpor cannot reach, the clipboard is the one that puts the
+    /// session back where it was.
+    ///
+    /// Bringing the app forward is `NSRunningApplication.activate` and nothing
+    /// else — no Apple event, no synthetic event, so neither Automation nor
+    /// Accessibility consent (verified: an .accessory process that was itself
+    /// frontmost activated another app, focus moved, and the TCC subsystem
+    /// logged no request of any kind).
+    private static func handOff(_ record: HibernatedSession) -> ReviveOutcome {
+        copyCommand(for: record)
+        guard let host = record.hostApplication,
+              let app = ProcProbe.runningApplication(named: host) else {
+            return .handedOff(host: record.hostApplication, broughtForward: false)
+        }
+        // Cross-app activation only works from an app that is itself active,
+        // and `activate()` reports success either way — measured: called from a
+        // command-line process it returned true and moved nothing. So the claim
+        // is gated on our own activation rather than on that return value, or
+        // `Torpor --revive` from a shell would announce raising a window that
+        // never came forward. `isActive` is a plain property read and needs no
+        // NSApplication, which the CLI does not have.
+        guard NSRunningApplication.current.isActive else {
+            return .handedOff(host: host, broughtForward: false)
+        }
+        return .handedOff(host: host, broughtForward: app.activate())
+    }
+
     /// Bring a hibernated session back — in the tab it died in where that is
-    /// possible, and in a fresh window where it is not.
+    /// possible, and by handing the user the command where it is not.
     ///
     /// The user never types `--resume` or hunts for a session id: Torpor opens
     /// the terminal at the original working directory and replays the original
     /// flags alongside the resume.
+    ///
+    /// `destination` is how the row's "New Window" offers the old behaviour to
+    /// someone who wants it. A new window is a perfectly good answer — it is
+    /// just not one to pick on the user's behalf when their session was living
+    /// in an editor they still have open.
     @discardableResult
     static func revive(_ record: HibernatedSession,
-                       terminal: String) throws -> ReviveOutcome {
+                       terminal: String,
+                       destination: ReviveDestination = .automatic) throws -> ReviveOutcome {
         let command = "cd \(shellQuote(record.cwd)) && clear && \(record.resumeCommand)"
 
-        // Prefer the tab the session died in. Only its own shell may still be
-        // sitting on that tty, so a match is unambiguous.
-        //
-        // Skipped outright for a host we know we cannot script. It could not
-        // have matched anyway — no Terminal or iTerm tab holds a VS Code tty —
-        // but attempting it walks every window of both apps over Apple events,
-        // which is what raises the "Torpor wants to control Terminal" consent
-        // dialog. Asking for that permission to run a search whose answer is
-        // already known is not a thing to do to someone.
-        //
-        // A record written before hosts were captured has no `hostApplication`
-        // and still gets the search: nil means "not known", not "not
-        // scriptable", and those records are the ones the tab match was
-        // written for.
-        let hostIsHopeless = record.hostApplication != nil
-            && !isScriptable(host: record.hostApplication)
-        if !hostIsHopeless, let tty = record.tty,
-           let app = reviveInOriginalTab(command: command, tty: tty) {
-            return .originalTab(app: app)
+        if destination == .automatic {
+            switch route(for: record) {
+            case .handoff:
+                return handOff(record)
+            case .originalTab:
+                // Prefer the tab the session died in. Only its own shell may
+                // still be sitting on that tty, so a match is unambiguous.
+                //
+                // Never attempted for an unscriptable host — `route` sent that
+                // to the handoff. It could not have matched anyway (no Terminal
+                // or iTerm tab holds a VS Code tty), but attempting it walks
+                // every window of both apps over Apple events, which is what
+                // raises the "Torpor wants to control Terminal" consent dialog.
+                // Asking for that permission to run a search whose answer is
+                // already known is not a thing to do to someone.
+                if let tty = record.tty,
+                   let app = reviveInOriginalTab(command: command, tty: tty) {
+                    return .originalTab(app: app)
+                }
+            }
         }
         try launch(command: command, terminal: terminal)
         // Deliberately NOT removed here. `launch` only knows the Apple event was
@@ -502,8 +623,15 @@ enum SessionControl {
         // the record now would destroy the only copy of the captured argv on a
         // revive that printed "command not found". Engine clears it once a live
         // session with this id appears in the registry.
-        return .newWindow(app: terminal, unreachableHost: hostIsHopeless
-                          ? record.hostApplication : nil)
+        //
+        // `unreachableHost` survives for the explicit new-window path: asking
+        // for a window is not the same as forgetting that this session's tab
+        // was in VS Code, and the notice still says so.
+        return .newWindow(app: terminal,
+                          unreachableHost: record.hostApplication.flatMap {
+                              isScriptable(host: $0) ? nil : $0
+                          },
+                          requested: destination == .newWindow)
     }
 
     /// Where the session actually came back, and — when it did not come back
@@ -517,7 +645,26 @@ enum SessionControl {
         switch outcome {
         case let .originalTab(app):
             return "Reopened \(record.name) in its original \(app) tab."
-        case let .newWindow(app, unreachableHost):
+        case let .handedOff(host, broughtForward):
+            // Says what is on the clipboard as well as that something is: the
+            // user is about to paste into a terminal, and "copied the command"
+            // alone gives them no way to know it is the right one before they
+            // press Return.
+            let copied = "Copied the command for \(record.name) to the clipboard"
+            guard let host else {
+                return "\(copied). Paste it into whichever terminal you want the session back in."
+            }
+            if broughtForward {
+                return "\(copied) and brought \(host) forward. Paste it into the tab you want — Torpor can't type into \(host)."
+            }
+            // Not raised: either \(host) is closed or this is the CLI, which
+            // cannot raise anything. Same instruction either way, and it still
+            // names the app so the user knows where the session was.
+            return "\(copied). Paste it into \(host), where it was running — Torpor can't type into it."
+        case let .newWindow(app, unreachableHost, requested):
+            if requested {
+                return "Opened \(record.name) in a new \(app) window."
+            }
             if let host = unreachableHost {
                 return "Reopened \(record.name) in a new \(app) window — its original tab was in \(host), which can't be scripted. Only Terminal and iTerm can."
             }

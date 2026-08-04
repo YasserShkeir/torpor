@@ -168,6 +168,27 @@ enum ProcProbe {
         return nil
     }
 
+    /// The running application a recorded host name refers to, if it is still
+    /// open. The inverse of the lookup `hostApplication(of:)` performs.
+    ///
+    /// Matched through `hostNames` first, because that is where most recorded
+    /// names came from: VS Code's `localizedName` is the bare "Code", so a
+    /// name-only match would never find the app we wrote down as "VS Code".
+    /// The `localizedName` fallback covers hosts absent from that table, which
+    /// is exactly how they were named in the first place.
+    ///
+    /// `.prohibited` processes are skipped for the same reason the parent walk
+    /// skips them: an Electron helper is not the app the user would point at.
+    static func runningApplication(named host: String) -> NSRunningApplication? {
+        NSWorkspace.shared.runningApplications.first { app in
+            guard app.activationPolicy != .prohibited else { return false }
+            if let bundleID = app.bundleIdentifier, let name = hostNames[bundleID] {
+                return name == host
+            }
+            return app.localizedName == host
+        }
+    }
+
     // MARK: - Argument vector capture
 
     /// A process's captured command line.
