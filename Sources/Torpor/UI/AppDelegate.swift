@@ -199,6 +199,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.target = self
         appMenu.addItem(settings)
         appMenu.addItem(.separator())
+        let support = NSMenuItem(title: "Support Torpor", action: #selector(openSponsorPage), keyEquivalent: "")
+        support.target = self
+        appMenu.addItem(support)
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Torpor",
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
@@ -227,6 +231,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc private func showSettingsFromMenu() { showSettings() }
+
+    @objc private func openSponsorPage() { NSWorkspace.shared.open(Links.sponsor) }
 
     // MARK: - Settings
 

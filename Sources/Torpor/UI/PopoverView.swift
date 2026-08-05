@@ -474,6 +474,16 @@ struct PopoverView: View {
             .buttonStyle(.borderless).controlSize(.small)
             .keyboardShortcut(",", modifiers: .command)
 
+            // Torpor is an .accessory app, so the Support item in the app menu
+            // is only reachable while the Settings window is key. This is the
+            // surface people actually see, so the ask lives here too — no key
+            // equivalent, because nothing in this panel should open a browser
+            // by accident.
+            Button { NSWorkspace.shared.open(Links.sponsor) } label: {
+                Label("Support", systemImage: "heart")
+            }
+            .buttonStyle(.borderless).controlSize(.small)
+
             Spacer()
 
             Button("Refresh") { engine.refresh() }

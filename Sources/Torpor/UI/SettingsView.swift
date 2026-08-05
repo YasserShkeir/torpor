@@ -889,6 +889,7 @@ struct AboutTab: View {
                                    url: Links.authorGitHub)
                         LinkButton("LinkedIn", systemImage: "person.crop.square",
                                    url: Links.authorLinkedIn)
+                        LinkButton("Sponsor", systemImage: "heart", url: Links.sponsor)
                     }
                 }
 
