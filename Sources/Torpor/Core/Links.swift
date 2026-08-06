@@ -8,7 +8,11 @@ enum Links {
     static let discussions = URL(string: "https://github.com/YasserShkeir/torpor/discussions")!
     static let star = URL(string: "https://github.com/YasserShkeir/torpor/stargazers")!
     static let releases = URL(string: "https://github.com/YasserShkeir/torpor/releases")!
-    static let sponsor = URL(string: "https://github.com/sponsors/YasserShkeir")!
+    // Points at the donate page rather than straight to GitHub Sponsors: that
+    // page carries every route (Stripe tiers, GitHub Sponsors, corporate
+    // inquiry), so the in-app button never has to pick one on the user's
+    // behalf — and the set can change without shipping a new binary.
+    static let sponsor = URL(string: "https://www.yasser-shkeir.com/donate")!
 
     // The www host, not the apex: the apex answers 308 and a redirect hop inside
     // a notarised, self-updating binary is a hop that can break without warning.
