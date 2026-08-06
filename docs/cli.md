@@ -93,17 +93,20 @@ a terminal.
 `--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir` and `--model`. Torpor
 reads the process's argv before terminating it and replays those.
 
-The replay list is an allowlist, not a passthrough. Two things it deliberately
+The replay list is an allowlist, not a passthrough. One thing it deliberately
 drops:
 
 - **Inline JSON.** `--mcp-config`, `--settings` and `--agent` accept a JSON blob
   as well as a path, and those blobs routinely carry an `env` block with tokens
   in it. Torpor refuses to write one to disk, and refuses the hibernate rather
   than replaying a command line it has quietly changed.
-- **Permission grants.** `--dangerously-skip-permissions` and `--permission-mode`
-  were scoped to a decision you made about the old process. A line copied from a
-  menu bar app is not where you re-grant them; type them yourself if you mean
-  them.
+
+`--dangerously-skip-permissions` and `--permission-mode` **are** replayed. They
+were not while Torpor still opened a terminal and ran the line for you, because
+that would have started an unrestricted agent in a window you never typed into.
+Torpor runs nothing now: the command goes on your clipboard, and you read it and
+press Return. Dropping them only meant handing you a line that quietly was not
+the session you had.
 
 `--preview` names both lists — what it would replay, and what it would leave
 behind — before anything is terminated.

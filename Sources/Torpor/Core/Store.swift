@@ -193,18 +193,38 @@ struct HibernatedSession: Codable, Identifiable, Hashable {
             "--model", "--settings", "--mcp-config", "--add-dir",
             "--plugin-dir", "--setting-sources",
             "--agent", "--effort", "--fallback-model", "--name",
+            // Same reasoning as --dangerously-skip-permissions below: it
+            // describes how the session the user is restoring actually ran, and
+            // they read the line before running it.
+            "--permission-mode",
         ]
         // Only these accept several space-separated values. Consuming the run
         // greedily for every value flag would swallow a positional prompt —
         // `claude --model opus "fix the parser"` — as if it were a second model.
         let multiValueFlags: Set<String> = ["--add-dir", "--mcp-config"]
-        // Deliberately excludes --dangerously-skip-permissions and
-        // --permission-mode. Replaying them would launch a fresh agent with
-        // permission prompts disabled, days after the user made that call, in a
-        // terminal they did not type into. The comment above says this
-        // allowlist excludes permission grants scoped to the old process —
-        // these are exactly that.
-        let boolFlags: Set<String> = ["--no-chrome"]
+        // `--dangerously-skip-permissions` is here, and it was deliberately not
+        // here until Torpor stopped launching anything.
+        //
+        // The old reason was sound for the old design: revive opened a Terminal
+        // tab and ran the line itself, so replaying this flag would have started
+        // an agent with every prompt disabled, days after the decision, in a
+        // window the user did not type into. Nothing about that is true now.
+        // Restoring a session is a command on the clipboard: the user reads it
+        // (it is in the row's tooltip verbatim), picks the terminal, and presses
+        // Return. Torpor executes nothing.
+        //
+        // What the exclusion bought instead was a command that quietly does not
+        // restore the session it claims to. That is the exact failure this
+        // allowlist refuses everywhere else — see the all-or-nothing rule on
+        // `--add-dir` below, and the refusal to hibernate at all rather than
+        // drop an inline `--mcp-config`. A user who ran in auto mode and pastes
+        // a line that silently is not auto mode has been handed a worse answer
+        // than either.
+        //
+        // If a future version ever executes the command on the user's behalf
+        // again, this belongs back on the excluded list and the test that
+        // guards it has to flip with it.
+        let boolFlags: Set<String> = ["--no-chrome", "--dangerously-skip-permissions"]
 
         // `--settings`, `--mcp-config` and `--agent` accept inline JSON as well
         // as a path, and an inline MCP definition routinely carries an `env`

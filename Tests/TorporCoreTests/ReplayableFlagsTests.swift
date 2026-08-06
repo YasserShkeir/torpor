@@ -83,23 +83,36 @@ func aPartiallyReplayableFlagIsRefusedWholesale(_ flag: String) {
     #expect(!message.contains("ghp_deadbeef"))
 }
 
-/// A recorded decision, not an accident of the allowlist. Replaying this would
-/// start a fresh agent with permission prompts disabled, days after the user
-/// made that call, in a terminal they did not type into. If this test ever has
-/// to change, the change is a security decision.
-@Test func permissionGrantsAreNeverReplayed() {
+/// A recorded decision, not an accident of the allowlist — and one that flipped.
+///
+/// These flags were excluded while revive *executed* the line itself, in a
+/// Terminal tab Torpor opened from a menu bar click: replaying them would have
+/// started an agent with every prompt disabled, days after the user decided
+/// that. Torpor executes nothing now. The command goes on the clipboard, the
+/// row's tooltip shows it verbatim, and the user picks the terminal and presses
+/// Return. Excluding them stopped protecting anyone and started handing back a
+/// line that silently does not restore the session it names.
+///
+/// The tripwire still stands, pointing the other way: if anything ever runs this
+/// command on the user's behalf again, these two go back on the excluded list
+/// and this test flips with it. Changing it either way is a security decision.
+@Test func permissionFlagsAreReplayedBecauseTheUserRunsTheLine() {
     let argv = ["--dangerously-skip-permissions", "--permission-mode", "acceptEdits",
                 "--model", "opus"]
     let session = record(arguments: argv)
     let (flags, refused) = HibernatedSession.replayable(from: argv)
 
-    #expect(flags == ["--model", "opus"])
-    #expect(refused.isEmpty, "a permission grant is dropped silently, not refused")
-    #expect(!flags.contains("--dangerously-skip-permissions"))
-    #expect(!flags.contains("--permission-mode"))
-    #expect(!flags.contains("acceptEdits"))
-    #expect(!session.resumeCommand.contains("dangerously"))
-    #expect(!session.resumeCommand.contains("acceptEdits"))
+    #expect(refused.isEmpty, "a permission grant is replayed, not refused")
+    #expect(flags.contains("--dangerously-skip-permissions"))
+    #expect(flags.contains("--permission-mode"))
+    #expect(flags.contains("acceptEdits"))
+    #expect(flags.contains("--model"))
+    #expect(flags.contains("opus"))
+    // The value has to stay attached to its flag, not merely be present.
+    let mode = flags.firstIndex(of: "--permission-mode")
+    #expect(mode.map { flags.indices.contains($0 + 1) && flags[$0 + 1] == "acceptEdits" } == true)
+    #expect(session.resumeCommand.contains("--dangerously-skip-permissions"))
+    #expect(session.resumeCommand.contains("acceptEdits"))
 }
 
 /// Inline JSON for `--settings`/`--mcp-config`/`--agent` routinely carries an
