@@ -700,7 +700,12 @@ final class Engine: ObservableObject {
             } else if let token = CredentialStore.subscriptionToken() {
                 if token.isExpired {
                     accountStatus.connected = false
-                    accountStatus.detail = "Token expired — reconnect"
+                    // Says which of the two it is. Torpor stopped asking on its
+                    // own after a refused Keychain dialog, and a bare "expired"
+                    // would leave that looking like the feature had broken.
+                    accountStatus.detail = CredentialStore.automaticImportBlocked
+                        ? "Keychain access declined — press Refresh to renew"
+                        : "Token expired — reconnect"
                 } else if accountStatus.lastFetch != nil, accountStatus.lastFetchError == nil {
                     // Evidence, not existence. A bare pasted string has no
                     // expiry, so `!isExpired` was true for the word "test".
@@ -791,6 +796,10 @@ final class Engine: ObservableObject {
             lastError = "Accept the account-risk notice before Torpor will contact Anthropic."
             return
         }
+        // Pressing Refresh is the user asking, so a Keychain dialog here is
+        // expected rather than an interruption. This is the only route back
+        // once a dismissed one has held off automatic renewal.
+        CredentialStore.allowImportPrompt()
         Task { await fetchLive() }
     }
 

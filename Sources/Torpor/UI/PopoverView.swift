@@ -122,17 +122,20 @@ struct PopoverView: View {
                         confirmingReclaimAll = false
                         engine.hibernateIdleSessions()
                     }
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.small).tint(.orange)
                     .disabled(engine.isBusyWithBatch)
                     .help("This is the confirm: ends \(reclaimableSessions.count) session\(reclaimableSessions.count == 1 ? "" : "s") now and frees \(Fmt.bytes(engine.reclaimableFootprint)).")
-                    Button { confirmingReclaimAll = false } label: {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.12)) { confirmingReclaimAll = false }
+                    } label: {
                         Image(systemName: "xmark").font(.system(size: 8))
                     }
                     .buttonStyle(.borderless).controlSize(.mini)
                     .accessibilityLabel("Cancel")
                 } else {
                     Button {
-                        confirmingReclaimAll = true
+                        withAnimation(.easeInOut(duration: 0.12)) { confirmingReclaimAll = true }
                     } label: {
                         // Named for what it does. "Reclaim" was a fourth verb
                         // for an action the rest of the app — including this
@@ -878,17 +881,18 @@ struct ProjectGroupView: View {
                             confirming = false
                             engine.hibernateGroup(group)
                         }
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.mini).tint(.orange)
                         .disabled(engine.isBusyWithBatch)
                         .help("This is the confirm: ends every session in \(group.name) now.")
                         Button {
-                            confirming = false
+                            withAnimation(.easeInOut(duration: 0.12)) { confirming = false }
                         } label: { Image(systemName: "xmark").font(.system(size: 8)) }
                             .buttonStyle(.borderless).controlSize(.mini)
                             .accessibilityLabel("Cancel")
                     } else {
                         Button {
-                            confirming = true
+                            withAnimation(.easeInOut(duration: 0.12)) { confirming = true }
                         } label: {
                             Image(systemName: "moon.zzz.fill").font(.system(size: 10))
                         }
@@ -940,6 +944,17 @@ struct SessionRow: View {
     var showsProject: Bool = true
     @State private var expanded = false
     @State private var confirmingHibernate = false
+
+    /// Animated so the arm step is something the eye catches. Without motion the
+    /// swap happens between frames, which is most of why a deliberate two-click
+    /// guard read as a dead button.
+    private func arm() {
+        withAnimation(.easeInOut(duration: 0.12)) { confirmingHibernate = true }
+    }
+
+    private func disarm() {
+        withAnimation(.easeInOut(duration: 0.12)) { confirmingHibernate = false }
+    }
 
     /// Leads with termination. The previous copy ("frees N and reopens on
     /// demand") described suspend-to-disk, which is not what happens.
@@ -1150,20 +1165,25 @@ struct SessionRow: View {
                 // route to the same signal is guarded the same way.
                 if session.declaredStatus == "idle" {
                     if confirmingHibernate {
+                        // Filled, not merely tinted. Two labels alone still read
+                        // as "nothing happened" at `.small`, where the words are
+                        // the only thing that changed — the armed step has to
+                        // differ in weight, not just in wording.
                         Button(hibernateConfirmLabel(1)) {
                             confirmingHibernate = false
                             engine.hibernate(session)
                         }
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small).tint(.orange)
                         .help("This is the confirm: ends it now and frees \(Fmt.bytes(session.totalFootprint)).")
-                        Button("Cancel") { confirmingHibernate = false }
+                        Button("Cancel") { disarm() }
                             .controlSize(.small).buttonStyle(.borderless)
                     } else {
                         // "Hibernate…" and "End Session" — two clicks, two
                         // different words. Both used to say "Hibernate", so
                         // nothing but a tint marked the first click as having
                         // happened at all.
-                        Button("Hibernate…") { confirmingHibernate = true }
+                        Button("Hibernate…") { arm() }
                             .controlSize(.small).tint(.orange)
                             .accessibilityHint("Asks you to confirm before ending the session")
                             .help("Ends this session and frees \(Fmt.bytes(session.totalFootprint)). Asks first.")

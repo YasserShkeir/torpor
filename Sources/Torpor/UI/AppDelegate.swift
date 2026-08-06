@@ -156,6 +156,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popover.performClose(nil)
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            // Torpor is an .accessory app, so clicking the status item while
+            // Terminal or VS Code is frontmost shows the popover without making
+            // Torpor the *active* application. `makeKey()` alone does not fix
+            // that: the first left-mouse-down inside an inactive app's window is
+            // consumed activating it, and SwiftUI's Button does not override
+            // `acceptsFirstMouse`. So every control in this panel silently ate
+            // the user's first click, and Hibernate — which is deliberately two
+            // clicks — read as needing three. Settings and the update prompt
+            // already activate; this path was the one that didn't.
+            NSApp.activate(ignoringOtherApps: true)
             popover.contentViewController?.view.window?.makeKey()
             watchForOutsideClicks()
             // Present first, then refresh. Refreshing before showing meant the

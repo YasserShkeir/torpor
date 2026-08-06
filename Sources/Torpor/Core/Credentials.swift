@@ -146,6 +146,49 @@ struct SubscriptionToken {
     }
 }
 
+/// Remembers what the Keychain returned, for the life of the process.
+///
+/// Reading a secret runs the item's ACL check, and any read can therefore raise
+/// a password dialog. `refreshAccountStatus()` did one on every poll tick — a
+/// secret read, thirty seconds apart, purely to render a status string — so
+/// whenever a dialog was due it was due again half a minute later. Nothing on
+/// that path needs a fresh read: it asks only whether a token exists and when it
+/// expires, and neither changes without going through the setters below, which
+/// invalidate this.
+///
+/// A stable Developer ID keeps the grant for Torpor's *own* item across builds,
+/// so this is no longer the difference between prompting and not. It is the
+/// difference between asking once and asking on a timer.
+///
+/// Lock-guarded rather than actor-isolated, matching `HibernationStore`: the
+/// Keychain read happens outside the lock, so a prompt the user leaves on
+/// screen cannot wedge anything else.
+private final class CredentialCache: @unchecked Sendable {
+    private let lock = NSLock()
+    /// Double optional throughout: the outer layer is "have we looked yet",
+    /// the inner is what we found. Caching the misses matters as much as
+    /// caching the hits, or the no-token case re-queries on every tick.
+    private var subscription: SubscriptionToken??
+    private var console: String??
+
+    func cachedSubscription() -> SubscriptionToken?? { lock.withLock { subscription } }
+    func rememberSubscription(_ value: SubscriptionToken?) {
+        lock.withLock { subscription = .some(value) }
+    }
+
+    func cachedConsole() -> String?? { lock.withLock { console } }
+    func rememberConsole(_ value: String?) { lock.withLock { console = .some(value) } }
+
+    /// Set when an unattended re-import failed, which in practice means the
+    /// user dismissed the Keychain dialog. Only an explicit action clears it.
+    private var autoImportBlocked = false
+    func importIsBlocked() -> Bool { lock.withLock { autoImportBlocked } }
+    func blockAutoImport() { lock.withLock { autoImportBlocked = true } }
+    func unblockAutoImport() { lock.withLock { autoImportBlocked = false } }
+
+    func forget() { lock.withLock { subscription = nil; console = nil } }
+}
+
 /// Reads and stores Torpor's own credentials, and imports Claude Code's.
 enum CredentialStore {
 
@@ -156,14 +199,30 @@ enum CredentialStore {
     /// The Keychain item Claude Code writes its OAuth credentials into.
     private static let claudeCodeService = "Claude Code-credentials"
 
+    private static let cache = CredentialCache()
+
+    /// Drop the remembered credentials, so the next read goes to the Keychain.
+    /// Every setter and every clear calls this; nothing else needs to.
+    static func invalidateCache() { cache.forget() }
+
     // MARK: - Torpor's own storage
 
     static func storeSubscriptionToken(_ raw: String) throws {
         try Keychain.set(raw.trimmingCharacters(in: .whitespacesAndNewlines),
                          service: service, account: subscriptionAccount)
+        invalidateCache()
     }
 
     static func subscriptionToken() -> SubscriptionToken? {
+        if let remembered = cache.cachedSubscription() { return remembered }
+        let value = readSubscriptionToken()
+        cache.rememberSubscription(value)
+        return value
+    }
+
+    /// The uncached read. Only `subscriptionToken()` should call this: every
+    /// call here is a potential password prompt.
+    private static func readSubscriptionToken() -> SubscriptionToken? {
         // `try?` already flattens the optional Keychain.get returns.
         guard let raw = try? Keychain.get(service: service, account: subscriptionAccount),
               !raw.isEmpty else { return nil }
@@ -190,27 +249,59 @@ enum CredentialStore {
         guard refreshingFromClaudeCode else { return stored }
         // A token about to expire mid-request is no more use than an expired one.
         if let stored, !stored.expiresWithin(60) { return stored }
-        guard let fresh = try? importFromClaudeCode() else { return stored }
-        return fresh
+
+        // Reading Claude Code's item can raise a Keychain dialog at any moment,
+        // and not only on the first run: Claude Code *rewrites* that item every
+        // time it rotates its token, and a rewritten item carries a fresh ACL
+        // that does not list Torpor. So "Always Allow" cannot stick, by
+        // construction — the item the grant was made against no longer exists.
+        //
+        // The loop that produced was the bug. `try?` swallowed a dismissal and
+        // returned the expired token, the request 401'd, and the poll came back
+        // five minutes later and asked again. Dismiss once, get asked every five
+        // minutes indefinitely. One unattended attempt is worth making, because
+        // it is silent whenever the ACL does happen to allow it; a second one
+        // after a refusal is just nagging.
+        guard !cache.importIsBlocked() else { return stored }
+        do {
+            return try importFromClaudeCode()
+        } catch {
+            cache.blockAutoImport()
+            return stored
+        }
     }
+
+    /// Whether an automatic renewal is currently held back by a refusal, so the
+    /// UI can offer the reconnect rather than leaving the user with rows that
+    /// silently stopped updating.
+    static var automaticImportBlocked: Bool { cache.importIsBlocked() }
+
+    /// Let the next renewal ask again. Only ever called for something the user
+    /// actively did — pressing Refresh, or Connect.
+    static func allowImportPrompt() { cache.unblockAutoImport() }
 
     static func clearSubscriptionToken() {
         Keychain.delete(service: service, account: subscriptionAccount)
+        invalidateCache()
     }
 
     static func storeConsoleKey(_ key: String) throws {
         try Keychain.set(key.trimmingCharacters(in: .whitespacesAndNewlines),
                          service: service, account: consoleAccount)
+        invalidateCache()
     }
 
     static func consoleKey() -> String? {
-        guard let key = try? Keychain.get(service: service, account: consoleAccount),
-              !key.isEmpty else { return nil }
-        return key
+        if let remembered = cache.cachedConsole() { return remembered }
+        let key = try? Keychain.get(service: service, account: consoleAccount)
+        let value = (key?.isEmpty == false) ? key : nil
+        cache.rememberConsole(value)
+        return value
     }
 
     static func clearConsoleKey() {
         Keychain.delete(service: service, account: consoleAccount)
+        invalidateCache()
     }
 
     // MARK: - Import from Claude Code
@@ -242,6 +333,13 @@ enum CredentialStore {
             throw ImportError.unrecognisedFormat
         }
         try Keychain.set(raw, service: service, account: subscriptionAccount)
+        // `Keychain.set` writes through the private helper rather than the
+        // caching setter, so the fresh copy has to be published here — the
+        // re-import path exists precisely because the cached one went stale.
+        cache.rememberSubscription(token)
+        // A read that got through is also the answer to whatever refusal
+        // blocked the last one.
+        cache.unblockAutoImport()
         return token
     }
 
