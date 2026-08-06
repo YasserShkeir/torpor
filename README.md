@@ -191,6 +191,23 @@ contacts that endpoint without an explicit opt-in.
 No telemetry, no analytics, no crash reporting, and there won't be any — Torpor
 parses your transcripts to count tokens, and those hold your source code.
 
+## Support
+
+Torpor is free and MIT licensed and there is no paid tier coming. If it has
+saved you some memory,
+[GitHub Sponsors](https://github.com/sponsors/YasserShkeir) is the one that
+takes no fee.
+
+For a one-off:
+[$5](https://buy.stripe.com/6oUfZbgh17Km5xQ2HzcMM00) ·
+[$10](https://buy.stripe.com/bJe00d8Oz4ya8K21DvcMM01) ·
+[$25](https://buy.stripe.com/00wfZb5Cn7Km8K21DvcMM02) ·
+[$50](https://buy.stripe.com/aFa14h7Kv0hU1hAfulcMM03) through Stripe.
+
+Every route, including monthly tiers, lives on
+**[yasser-shkeir.com/donate](https://www.yasser-shkeir.com/donate)** — which is
+also where the **Support** button in the popover footer goes.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

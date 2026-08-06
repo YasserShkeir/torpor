@@ -6,3 +6,6 @@ contact_links:
   - name: Security issue
     url: https://github.com/YasserShkeir/torpor/security/advisories/new
     about: Please report privately, not as a public issue.
+  - name: Support Torpor
+    url: https://www.yasser-shkeir.com/donate
+    about: Torpor is free and MIT licensed. Sponsorship is what keeps it maintained.
